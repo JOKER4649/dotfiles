@@ -20,14 +20,16 @@ description: 建立 review-ready 的 GitHub PR 並在合併前完成所有檢查
 - push 前在本地完成檢查，盡可能減少 GitHub Actions 負擔
 - 標題格式、內文範本見 `reference/create.md`
 
-### 2. 等待檢查 → 詳見 `reference/review.md`
+### 2. 檢查與合併 → 詳見 `reference/review.md`
 
-- 用 `wait.py` 輪詢等待 CI 完成 + kilo review 完成，**不要**用 `sleep` 猜等待時間
-- 修復 review comments 後 push，kilo 會對新 commit 重跑；用 `wait.py` 重新等待這一輪完成
+- 用全局命令 `pr_merge` 輪詢等待 CI 完成 + kilo review 完成；預設為 check-only，完成後輸出四碼 confirmation hash，**不要**用 `sleep` 猜等待時間
+- 修復 review comments 後 push，kilo 會對新 commit 重跑；用 `pr_merge` 重新執行這一輪檢查
+- 確認檢查通過後，使用 `pr_merge --apply <hash>` 合併；只有 `gh` 需要時才加上明確的 `--squash`、`--merge` 或 `--rebase` 策略旗標
+- Agent 絕不直接呼叫 `gh pr merge`；全域 ExtensionAPI guard 會阻擋此操作
 
 ### 3. 處理 review → 詳見 `reference/review.md`
 
-- 讀取 kilo（與 gemini）的 review comments
+- 讀取 kilo 的 review comments
 - 按回應原則修復 / 採納 / 建 issue / 拒絕
 - 已處理的 thread 用 `pr-review-thread_resolve` 解決
 
@@ -49,5 +51,5 @@ description: 建立 review-ready 的 GitHub PR 並在合併前完成所有檢查
 ## 工具
 
 - `act` — 模擬 GitHub Actions，減少 GitHub Actions 負擔
-- `wait.py`（本 SKILL 目錄內）— 輪詢等待 CI 與 kilo review；用法見 `reference/review.md`
-- `pr-review-thread_list` / `pr-review-thread_resolve` / `pr-review-thread_unresolve` — 操作 PR review threads
+- `pr_merge`（全局命令，位於 `commands/`）— 預設 check-only，等待 CI 與 kilo review、確認可合併性並列出未解決 review threads；用法見 `reference/review.md`。以輸出的四碼 hash 搭配 `pr_merge --apply <hash>` 合併，必要時加策略旗標
+- `pr-review-thread_list` / `pr-review-thread_resolve` / `pr-review-thread_unresolve` — 操作 PR review threads（亦可直接用 `pr_merge --list` / `pr_merge --resolve`）
