@@ -12,6 +12,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import shlex
 import subprocess
 import typer
 import sys
@@ -80,6 +81,55 @@ class PureHelperTests(unittest.TestCase):
             "mergeable": "MERGEABLE",
         }
         self.assertIsNotNone(pr_merge.final_mergeability_error(view))
+
+
+class ReviewThreadTests(unittest.TestCase):
+    def test_fetch_threads_paginates_and_aggregates_all_pages(self) -> None:
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"id": "thread-1", "isResolved": False}],
+                                "pageInfo": {
+                                    "hasNextPage": True,
+                                    "endCursor": "cursor-1",
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"id": "thread-2", "isResolved": True}],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+        ]
+        calls: list[dict[str, Any]] = []
+
+        def fake_graphql(query: str, **variables: Any) -> dict[str, Any]:
+            calls.append({"query": query, **variables})
+            return pages[len(calls) - 1]
+
+        with mock.patch.object(pr_merge, "_gh_graphql", side_effect=fake_graphql):
+            threads = pr_merge._fetch_threads("o", "r", 7)
+
+        self.assertEqual([thread["id"] for thread in threads], ["thread-1", "thread-2"])
+        self.assertEqual([call["cursor"] for call in calls], [None, "cursor-1"])
+        self.assertIn("pageInfo", calls[0]["query"])
+        self.assertIn("after: $cursor", calls[0]["query"])
 
 
 class _FlowRunner:
@@ -211,9 +261,10 @@ def _fast_view(
     merge_state_status: str = "BLOCKED",
     mergeable: str = "UNKNOWN",
     updated_at: str = "2026-07-25T00:00:00Z",
+    status_check_rollup: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """fast screening 用的 view: 包含狀態 / draft / mergeStateStatus / mergeable / updatedAt。"""
-    return {
+    view = {
         **_resolved_view(),
         "headRefName": "feat",
         "baseRefName": "main",
@@ -223,6 +274,9 @@ def _fast_view(
         "mergeable": mergeable,
         "updatedAt": updated_at,
     }
+    if status_check_rollup is not None:
+        view["statusCheckRollup"] = status_check_rollup
+    return view
 
 
 def _final_view(
@@ -286,18 +340,25 @@ class CommandFlowTests(unittest.TestCase):
 
 
     def test_rollup_with_failed_check_exits_one_no_further_polls(self) -> None:
+        failed_rollup = [
+            {
+                "__typename": "CheckRun",
+                "name": "unit",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+            }
+        ]
         runner = _FlowRunner(
             pr_view_payloads=[
                 _resolved_view(),
-                _fast_view(),
-                _ci_view(ci_conclusion="FAILURE", include_kilo=False),
+                _fast_view(status_check_rollup=failed_rollup),
             ]
         )
         code, stdout, _ = runner(argv=[])
         self.assertEqual(code, 1)
-        # 不應出現 threads 列印 (因為 fail-fast 在 _wait 內退出, 不進入 threads 階段)
+        # 初始 fast view 已含失敗 rollup, 不應再額外輪詢或進入 threads 階段。
         self.assertNotIn("未解決 review threads", stdout)
-        self.assertEqual(len(runner.pr_view_calls), 3)
+        self.assertEqual(len(runner.pr_view_calls), 2)
 
     def test_unresolved_thread_blocks_merge(self) -> None:
         # CI/kilo 綠, threads 未解 → exit 1, 不呼叫 gh pr merge。
@@ -345,6 +406,64 @@ class CommandFlowTests(unittest.TestCase):
         code, _, _ = runner(argv=["--apply", "dead"])
         self.assertEqual(code, 1)
         self.assertEqual(runner.gh_merge_calls, [])
+
+    def test_apply_with_padded_hash_is_rejected(self) -> None:
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(updated_at="2026-07-25T00:00:00Z"),
+            ],
+            threads_payloads=[[]],
+        )
+        code, _, _ = runner(argv=["--apply", " b08e "])
+        self.assertEqual(code, 1)
+        self.assertEqual(runner.gh_merge_calls, [])
+
+    def test_empty_apply_is_mutually_exclusive_with_resolve(self) -> None:
+        runner = _FlowRunner(pr_view_payloads=[_resolved_view()])
+        code, _, _ = runner(argv=["--apply", "", "--resolve", "PRRT_abc"])
+        self.assertEqual(code, 3)
+        self.assertEqual(runner.gh_merge_calls, [])
+
+    def test_apply_hint_uses_declared_pr_option_and_is_typer_parseable(self) -> None:
+        check_runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(updated_at="2026-07-25T00:00:00Z"),
+            ],
+            threads_payloads=[[]],
+        )
+        code, stdout, _ = check_runner(argv=[])
+        self.assertEqual(code, 0)
+        command_line = next(
+            line.removeprefix("執行: ")
+            for line in stdout.splitlines()
+            if line.startswith("執行: ")
+        )
+        command_argv = shlex.split(command_line)
+        self.assertEqual(command_argv[0], "pr_merge")
+        self.assertIn("--pr", command_argv)
+        self.assertEqual(
+            command_argv[command_argv.index("--pr") + 1],
+            "https://github.com/o/r/pull/7",
+        )
+
+        apply_runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(updated_at="2026-07-25T00:00:00Z"),
+            ],
+            threads_payloads=[[]],
+        )
+        parsed_code, _, _ = apply_runner(argv=command_argv[1:])
+        self.assertEqual(parsed_code, 0)
+        self.assertEqual(len(apply_runner.gh_merge_calls), 1)
 
     def test_successful_apply_calls_merge_exactly_once(self) -> None:
         # happy path: 所有檢查綠, threads 已解, final CLEAN+MERGEABLE, hash b08e。

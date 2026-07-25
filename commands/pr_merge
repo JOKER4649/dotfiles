@@ -52,10 +52,14 @@ KILO_ABSENT_HINT_SECONDS = 60
 BODY_SUMMARY_LEN = 120
 
 THREADS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           isResolved
@@ -127,7 +131,7 @@ def final_mergeability_error(view: Mapping[str, Any]) -> str | None:
 
 def is_valid_confirmation_hash(value: str) -> bool:
     """確認碼格式檢查: 4 字符十六進位。"""
-    return bool(re.fullmatch(r"[0-9a-f]{4}", value.lower()))
+    return bool(re.fullmatch(r"[0-9a-f]{4}", value, re.IGNORECASE))
 
 
 # ---- gh 呼叫 ----
@@ -167,7 +171,8 @@ def _gh_graphql(query: str, **variables) -> dict:
     """呼叫 gh api graphql 並回傳解析後的字典。"""
     args = ["gh", "api", "graphql", "-f", f"query={query}"]
     for k, v in variables.items():
-        args += ["-F", f"{k}={v}"]
+        value = "null" if v is None else v
+        args += ["-F", f"{k}={value}"]
     try:
         r = _run_gh(args)
     except subprocess.CalledProcessError as e:
@@ -257,19 +262,32 @@ def _kilo_status(kilo_checks: list[dict]) -> tuple[bool, bool, bool, str]:
 
 
 def _fetch_threads(owner: str, name: str, number: int) -> list[dict]:
-    """取得 PR 的 review threads (含已解決與未解決)。"""
-    data = _gh_graphql(
-        THREADS_QUERY, owner=owner, name=name, number=number
-    )
-    nodes = (
-        data.get("data", {})
-        .get("repository", {})
-        .get("pullRequest", {})
-        .get("reviewThreads", {})
-        .get("nodes", [])
-        or []
-    )
-    return nodes
+    """取得 PR 的 review threads (含已解決與未解決), 並聚合所有分頁。"""
+    nodes: list[dict] = []
+    cursor: str | None = None
+
+    while True:
+        data = _gh_graphql(
+            THREADS_QUERY,
+            owner=owner,
+            name=name,
+            number=number,
+            cursor=cursor,
+        )
+        connection = (
+            data.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+            or {}
+        )
+        nodes.extend(connection.get("nodes", []) or [])
+        page_info = connection.get("pageInfo", {}) or {}
+        if not page_info.get("hasNextPage"):
+            return nodes
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            raise typer.Exit("reviewThreads 分頁缺少 endCursor")
 
 
 def _thread_location(thread: dict) -> str:
@@ -386,10 +404,12 @@ def _wait(
     timeout: int,
     interval: int,
     kilo: bool,
+    initial_view: dict | None = None,
 ) -> tuple[dict, bool, bool, bool, str]:
     """輪詢等待 CI 與 kilo 完成。
 
     回傳 (pr_view_data, ci_all_success, kilo_exists, kilo_failed, kilo_label)。
+    若 caller 已有包含 statusCheckRollup 的初始 view, 首輪直接使用它。
     """
     deadline = time.time() + timeout
     start = time.time()
@@ -397,14 +417,17 @@ def _wait(
     first_iteration = True
     kilo_absent_warned = False
 
-    data: dict = {}
+    data: dict | None = initial_view
     ci_all_success = False
     kilo_exists = False
     kilo_failed = False
     kilo_label = "absent"
 
     while True:
-        data = _gh_pr_view(pr, "statusCheckRollup,number,url,headRefName,baseRefName")
+        if data is None:
+            data = _gh_pr_view(
+                pr, "statusCheckRollup,number,url,headRefName,baseRefName"
+            )
 
         if not printed_header:
             number = data.get("number")
@@ -472,6 +495,7 @@ def _wait(
             raise typer.Exit(2)
 
         time.sleep(interval)
+        data = None
 
     return data, ci_all_success, kilo_exists, kilo_failed, kilo_label
 
@@ -529,7 +553,7 @@ def _format_apply_command(
     rebase: bool,
     delete_branch: bool,
 ) -> str:
-    """組成「pr_merge --apply <hash> [--strategy] [--delete-branch]」範例字串。"""
+    """組成可直接交給 CLI 的「pr_merge --apply <hash> --pr <target>」範例。"""
     parts = ["pr_merge", "--apply", apply_hash]
     if merge:
         parts.append("--merge")
@@ -539,7 +563,7 @@ def _format_apply_command(
         parts.append("--rebase")
     if delete_branch:
         parts.append("--delete-branch")
-    parts.append(target)
+    parts.extend(["--pr", target])
     return " ".join(parts)
 
 
@@ -569,7 +593,7 @@ def _run_check(
         raise typer.Exit(1)
 
     # _wait 內部已處理 CI/kilo fail-fast。
-    _wait(pr, timeout, interval, kilo)
+    _wait(pr, timeout, interval, kilo, initial_view=fast_view)
 
     # threads 檢查
     threads = _fetch_threads(owner, name, number)
@@ -666,7 +690,7 @@ def main(
     target = view.get("url") or (pr or "")
 
     # --apply / --list / --resolve 互斥。
-    modes = [bool(apply_hash), bool(list_only), resolve is not None]
+    modes = [apply_hash is not None, bool(list_only), resolve is not None]
     if sum(modes) > 1:
         typer.secho(
             "--apply / --list / --resolve 互斥, 不可同時指定",
@@ -742,8 +766,8 @@ def main(
         raise typer.Exit(0)
 
     # --apply 模式: 驗證 hash 並呼叫 gh pr merge。
-    normalized = apply_hash.strip().lower()
-    if not is_valid_confirmation_hash(normalized):
+    normalized = apply_hash.lower()
+    if not is_valid_confirmation_hash(apply_hash):
         typer.secho(
             f"✗ --apply 參數需為 4 字符十六進位, 收到: {apply_hash!r}",
             fg="red",
