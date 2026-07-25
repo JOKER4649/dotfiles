@@ -15,7 +15,7 @@
 # 因此排序為: inline hooks → [post-switch] → [aliases] → ...
  
 # 將每個專案的 worktree 放在 repo 內，便於集中管理與清理。
-#worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
+worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
 
 # ─── pre-start: 新 worktree 自動 mise trust + install ───────────────────────
 #
