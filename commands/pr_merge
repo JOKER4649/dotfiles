@@ -1,0 +1,785 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["typer"]
+# ///
+"""pr_merge — 等待 PR 的 CI 與 kilo-code-bot review 完成, 列出 review threads,
+並在確認後執行 merge。
+
+預設使用當前分支的 PR (省略 --pr), 輪詢直到 CI 全部完成且 kilo 的
+CheckRun (name 為 "Kilo Code Review") 已 COMPLETED, 接著列出未解決的
+review threads (含 thread ID、路徑、作者、摘要)。
+
+kilo 以 GitHub App 運作, 會在 PR checks 中建立一個 CheckRun; 該
+CheckRun 的 status 即判斷 kilo 當前這一輪是否處理完成的唯一可靠訊號
+(review 物件 body 永遠為空、summary comment 為原地更新, 無法靠評論
+出現判斷增量是否審完)。本工具刻意將 kilo 的 CheckRun 從 CI 統計中
+隔離出來單獨報告, 避免「kilo 抓到 critical」被混進「CI 失敗」語意。
+
+可用 --resolve 批次解決 review thread, 接受完整 thread ID 或 #N 索引
+(後者以當前未解決 threads 的顯示順序為準), 支援重複或逗號分隔。
+"""
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+from typing import Annotated, Any, Mapping
+from urllib.parse import urlparse
+
+import typer
+
+# kilo 的 CheckRun name 識別: 不分大小寫的子串比對。
+# 實測 name 為 "Kilo Code Review"; kilo 的 CheckRun creator 為 null,
+# 無法用 author login 識別, 只能用 name。
+KILO_CHECK_NAME_HINT = "kilo"
+
+# 視為 "失敗" 的 CheckRun conclusion; 其餘 (NEUTRAL/SKIPPED/STALE/SUCCESS) 視為通過。
+FAILURE_CONCLUSIONS = {
+    "FAILURE",
+    "TIMED_OUT",
+    "STARTUP_FAILURE",
+    "CANCELLED",
+    "ACTION_REQUIRED",
+}
+
+# kilo 未出現時, 多久後提示用戶可能未安裝。
+KILO_ABSENT_HINT_SECONDS = 60
+
+# 評論摘要顯示長度上限
+BODY_SUMMARY_LEN = 120
+
+THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 1) {
+            nodes {
+              author { login }
+              body
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+RESOLVE_MUTATION = """
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}
+"""
+
+
+# ---- 純函式 (可測試的契約) ----
+
+def confirmation_hash(updated_at: str) -> str:
+    """以 updated_at 產生 4 字符確認碼, 防止 agent 憑印象執行 --apply。
+
+    usedforsecurity=False 表示這裡不是安全用途, 只是變更偵測碼。
+    """
+    return hashlib.md5(
+        updated_at.encode(), usedforsecurity=False
+    ).hexdigest()[:4]
+
+
+def fast_mergeability_error(view: Mapping[str, Any]) -> str | None:
+    """快速篩選已可確認失敗的 PR (closed / draft / 確認衝突)。
+
+    對於 CI 仍在跑 (BLOCKED/UNSTABLE/UNKNOWN/BEHIND 等) 一律視為可進入
+    後續等待流程, 不在這裡拒絕。
+    """
+    if (view.get("state") or "").upper() != "OPEN":
+        return f"PR 不是 OPEN 狀態: {view.get('state') or 'unknown'}"
+    if view.get("isDraft"):
+        return "PR 仍是 draft, 不能合併"
+    if (view.get("mergeable") or "").upper() == "CONFLICTING":
+        return "PR 存在已確認的合併衝突"
+    if (view.get("mergeStateStatus") or "").upper() == "DIRTY":
+        return "PR 的 mergeStateStatus 為 DIRTY, 存在合併衝突"
+    return None
+
+
+def final_mergeability_error(view: Mapping[str, Any]) -> str | None:
+    """最終篩選: 確認 PR 已進入可合併狀態 (CLEAN/HAS_HOOKS + MERGEABLE)。"""
+    if (error := fast_mergeability_error(view)) is not None:
+        return error
+    status = (view.get("mergeStateStatus") or "").upper()
+    mergeable = (view.get("mergeable") or "").upper()
+    if status not in {"CLEAN", "HAS_HOOKS"}:
+        return f"PR 尚不可合併, mergeStateStatus={status or 'unknown'}"
+    if mergeable != "MERGEABLE":
+        return f"PR 尚不可合併, mergeable={mergeable or 'unknown'}"
+    return None
+
+def is_valid_confirmation_hash(value: str) -> bool:
+    """確認碼格式檢查: 4 字符十六進位。"""
+    return bool(re.fullmatch(r"[0-9a-f]{4}", value.lower()))
+
+
+# ---- gh 呼叫 ----
+
+
+def _run_gh(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(args, capture_output=True, text=True, check=check)
+
+
+def _gh_pr_view(pr: str | None, fields: str) -> dict:
+    """呼叫 gh pr view --json 並回傳解析後的字典。"""
+    cmd = ["gh", "pr", "view"]
+    if pr:
+        cmd.append(pr)
+    cmd += ["--json", fields]
+    try:
+        r = _run_gh(cmd)
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip() or str(e)
+        typer.secho(f"gh pr view 失敗: {stderr}", fg="red", err=True)
+        raise typer.Exit(3) from e
+    return json.loads(r.stdout)
+
+
+def _parse_repo(url: str) -> tuple[str, str, int]:
+    """從 PR URL 解析 (owner, repo, number)。
+
+    URL 形如 https://github.com/owner/repo/pull/123
+    """
+    parts = urlparse(url).path.strip("/").split("/")
+    if len(parts) < 4 or parts[2] != "pull":
+        raise typer.Exit(f"無法解析 PR URL: {url}")
+    return parts[0], parts[1], int(parts[3])
+
+
+def _gh_graphql(query: str, **variables) -> dict:
+    """呼叫 gh api graphql 並回傳解析後的字典。"""
+    args = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for k, v in variables.items():
+        args += ["-F", f"{k}={v}"]
+    try:
+        r = _run_gh(args)
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip() or str(e)
+        typer.secho(f"gh api graphql 失敗: {stderr}", fg="red", err=True)
+        raise typer.Exit(3) from e
+    return json.loads(r.stdout)
+
+
+# ---- CI / kilo 判讀 ----
+
+
+def _is_kilo_check(check: dict) -> bool:
+    """判斷一個 rollup 條目是否為 kilo 的 CheckRun。
+
+    kilo 的 CheckRun creator 為 null, 只能靠 name 不分大小寫包含 'kilo'。
+    """
+    if check.get("__typename") != "CheckRun":
+        return False
+    name = (check.get("name") or "").lower()
+    return KILO_CHECK_NAME_HINT in name
+
+
+def _split_rollup(rollup: list[dict]) -> tuple[list[dict], list[dict]]:
+    """將 rollup 拆成 (CI 檢查項, kilo check 項)。"""
+    ci: list[dict] = []
+    kilo: list[dict] = []
+    for check in rollup or []:
+        (kilo if _is_kilo_check(check) else ci).append(check)
+    return ci, kilo
+
+def _summarise_checks(rollup: list[dict]) -> tuple[str, bool, bool, bool]:
+    """回傳 (摘要字串, 全部完成, 全部成功, 已知失敗)。僅處理 CI 部分。
+
+    「已知失敗」在還沒全部完成時就可能為 True, 用於 fail-fast: 任何一個
+    CI 檢查項已結論為失敗就立即退出, 不必等其他檢查跑完。
+    """
+    if not rollup:
+        return "no checks", True, True, False
+
+    total = len(rollup)
+    done = 0
+    fail = 0
+
+    for check in rollup:
+        if check.get("__typename") == "StatusContext":
+            state = (check.get("state") or "").upper()
+            if state in {"SUCCESS", "FAILURE", "ERROR"}:
+                done += 1
+                if state != "SUCCESS":
+                    fail += 1
+        else:
+            if check.get("status") == "COMPLETED":
+                done += 1
+                if (check.get("conclusion") or "").upper() in FAILURE_CONCLUSIONS:
+                    fail += 1
+
+    summary = f"{done}/{total} done"
+    if fail:
+        summary += f", {fail} fail"
+    return summary, done == total, done == total and fail == 0, fail > 0
+
+
+def _kilo_status(kilo_checks: list[dict]) -> tuple[bool, bool, bool, str]:
+    """回傳 (check 是否存在, 是否完成, 是否失敗, 顯示用標籤)。"""
+    if not kilo_checks:
+        return False, False, False, "absent"
+
+    check = kilo_checks[0]
+    status = check.get("status")
+    conclusion = (check.get("conclusion") or "").upper()
+
+    if status == "COMPLETED":
+        failed = conclusion in FAILURE_CONCLUSIONS
+        label = f"completed ({conclusion or 'NONE'})"
+        return True, True, failed, label
+
+    label = (status or "unknown").lower()
+    if status == "IN_PROGRESS":
+        label = "in_progress"
+    elif status == "QUEUED":
+        label = "queued"
+    return True, False, False, label
+
+
+# ---- review threads ----
+
+
+def _fetch_threads(owner: str, name: str, number: int) -> list[dict]:
+    """取得 PR 的 review threads (含已解決與未解決)。"""
+    data = _gh_graphql(
+        THREADS_QUERY, owner=owner, name=name, number=number
+    )
+    nodes = (
+        data.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+        or []
+    )
+    return nodes
+
+
+def _thread_location(thread: dict) -> str:
+    path = thread.get("path") or "?"
+    line = thread.get("line")
+    if line is None:
+        return path
+    return f"{path}:{line}"
+
+
+def _thread_author(thread: dict) -> str:
+    comments = thread.get("comments", {}).get("nodes", []) or []
+    if not comments:
+        return "?"
+    author = comments[0].get("author") or {}
+    return author.get("login") or "?"
+
+
+def _thread_body_summary(thread: dict) -> str:
+    comments = thread.get("comments", {}).get("nodes", []) or []
+    body = (comments[0].get("body") or "").strip() if comments else ""
+    # 取第一行, 截斷
+    first_line = body.splitlines()[0] if body else ""
+    if len(first_line) > BODY_SUMMARY_LEN:
+        first_line = first_line[: BODY_SUMMARY_LEN - 1] + "…"
+    return first_line
+
+
+def _print_threads(threads: list[dict], *, only_unresolved: bool = True) -> list[dict]:
+    """印出 review threads, 回傳實際顯示的 (未解決) threads 清單。"""
+    shown = [t for t in threads if not (only_unresolved and t.get("isResolved"))]
+    if not shown:
+        typer.secho("沒有未解決的 review threads", fg="green")
+        return shown
+
+    typer.secho(
+        f"\n未解決 review threads ({len(shown)}):", fg="cyan", bold=True
+    )
+    for idx, t in enumerate(shown, start=1):
+        loc = _thread_location(t)
+        author = _thread_author(t)
+        tid = t.get("id", "?")
+        outdated = " (outdated)" if t.get("isOutdated") else ""
+        typer.echo(f"  [{idx}] {loc}  {author}{outdated}")
+        typer.secho(f"      {tid}", fg="bright_black")
+        summary = _thread_body_summary(t)
+        if summary:
+            typer.echo(f"      {summary}")
+
+    typer.secho(
+        f"\n解決: pr_merge --resolve #1  (索引, 可逗號分隔) 或 --resolve {shown[0].get('id','<ID>')}",
+        fg="bright_black",
+    )
+    return shown
+
+
+def _resolve_thread(thread_id: str) -> bool:
+    """解決一個 review thread, 回傳是否成功。"""
+    try:
+        _gh_graphql(RESOLVE_MUTATION, threadId=thread_id)
+    except typer.Exit:
+        return False
+    return True
+
+
+def _expand_resolve_ids(
+    raw: list[str], owner: str, name: str, number: int
+) -> list[str]:
+    """將 --resolve 的輸入展開為完整 thread ID 清單。
+
+    支援: 完整 thread ID, 或 #N 索引 (以當前未解決 threads 的顯示順序為準)。
+    輸入可重複或以逗號分隔。
+    """
+    tokens: list[str] = []
+    for r in raw:
+        tokens.extend(x.strip() for x in r.split(",") if x.strip())
+
+    if not tokens:
+        return []
+
+    indices: list[int] = []
+    ids: list[str] = []
+    for tok in tokens:
+        if tok.startswith("#"):
+            try:
+                indices.append(int(tok[1:]))
+            except ValueError:
+                typer.secho(f"無效的索引: {tok}", fg="red", err=True)
+                raise typer.Exit(3)
+        else:
+            ids.append(tok)
+
+    if indices:
+        threads = _fetch_threads(owner, name, number)
+        unresolved = [t for t in threads if not t.get("isResolved")]
+        for n in indices:
+            if n < 1 or n > len(unresolved):
+                typer.secho(
+                    f"索引 #{n} 超出範圍 (未解決 threads 共 {len(unresolved)})",
+                    fg="red",
+                    err=True,
+                )
+                raise typer.Exit(3)
+            ids.append(unresolved[n - 1].get("id"))
+
+    return ids
+
+
+# ---- 主流程 ----
+
+
+def _wait(
+    pr: str | None,
+    timeout: int,
+    interval: int,
+    kilo: bool,
+) -> tuple[dict, bool, bool, bool, str]:
+    """輪詢等待 CI 與 kilo 完成。
+
+    回傳 (pr_view_data, ci_all_success, kilo_exists, kilo_failed, kilo_label)。
+    """
+    deadline = time.time() + timeout
+    start = time.time()
+    printed_header = False
+    first_iteration = True
+    kilo_absent_warned = False
+
+    data: dict = {}
+    ci_all_success = False
+    kilo_exists = False
+    kilo_failed = False
+    kilo_label = "absent"
+
+    while True:
+        data = _gh_pr_view(pr, "statusCheckRollup,number,url,headRefName,baseRefName")
+
+        if not printed_header:
+            number = data.get("number")
+            url = data.get("url")
+            head = data.get("headRefName") or "?"
+            base = data.get("baseRefName") or "?"
+            typer.echo(f"PR #{number} → {url}")
+            typer.echo(f"分支: {head} → {base}")
+            printed_header = True
+
+        rollup = data.get("statusCheckRollup") or []
+        ci_checks, kilo_checks = _split_rollup(rollup)
+
+        ci_summary, ci_done, ci_all_success, ci_failed = _summarise_checks(ci_checks)
+        kilo_exists, kilo_done, kilo_failed, kilo_label = _kilo_status(kilo_checks)
+
+        # 首輪看到空 rollup 不信: GitHub 可能還沒把 CI/kilo 註冊進來。
+        if first_iteration and not rollup:
+            ci_done = False
+            ci_summary = "registering…"
+        first_iteration = False
+
+        # kilo 啟用但久未出現其 CheckRun: 提示可能未安裝 (只警告一次)。
+        if (
+            kilo
+            and not kilo_exists
+            and not kilo_absent_warned
+            and (time.time() - start) >= KILO_ABSENT_HINT_SECONDS
+        ):
+            typer.secho(
+                "⚠ 未偵測到 kilo CheckRun (已等待 "
+                f"{KILO_ABSENT_HINT_SECONDS}s); 確認 repo 是否安裝 kilo, "
+                "否則改用 --no-kilo",
+                fg="yellow",
+                err=True,
+            )
+            kilo_absent_warned = True
+
+        kilo_ready = (not kilo) or kilo_done
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] CI: {ci_summary}"
+        if kilo:
+            line += f" | kilo: {kilo_label}"
+        typer.echo(line)
+
+        # fail-fast: CI 任一項已失敗, 立即退出, 不必等其他檢查。
+        if ci_failed:
+            typer.secho(f"CI: {ci_summary}", fg="red", err=True)
+            raise typer.Exit(1)
+        # fail-fast: kilo 已 COMPLETED 且結論為失敗, 立即退出。
+        if kilo and kilo_done and kilo_failed:
+            typer.secho(
+                f"Kilo ✗ 完成, 結論為 FAILURE ({kilo_label})",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        if ci_done and kilo_ready:
+            break
+
+        if time.time() >= deadline:
+            typer.secho(f"⏱ 超時 ({timeout}s), 停止等待", fg="yellow", err=True)
+            raise typer.Exit(2)
+
+        time.sleep(interval)
+
+    return data, ci_all_success, kilo_exists, kilo_failed, kilo_label
+
+
+# 初始 gh pr view 抓的欄位: 解析目標 + fast mergeability 篩選所需。
+_FAST_VIEW_FIELDS = (
+    "number,url,state,isDraft,headRefName,baseRefName,"
+    "mergeStateStatus,mergeable,updatedAt,statusCheckRollup"
+)
+# _wait 用的欄位: statusCheckRollup 加上分支/URL 顯示。
+_WAIT_VIEW_FIELDS = (
+    "statusCheckRollup,number,url,headRefName,baseRefName"
+)
+# final 篩選用的欄位: 加上 updatedAt 以計算確認碼。
+_FINAL_VIEW_FIELDS = (
+    "number,url,state,isDraft,headRefName,baseRefName,"
+    "mergeStateStatus,mergeable,updatedAt"
+)
+def _select_strategy(
+    merge: bool, squash: bool, rebase: bool
+) -> str | None:
+    """根據策略旗標決定要附加的 gh 旗標; 互斥由 caller 驗證。"""
+    if merge:
+        return "--merge"
+    if squash:
+        return "--squash"
+    if rebase:
+        return "--rebase"
+    return None
+
+
+def _validate_strategy_flags(
+    merge: bool, squash: bool, rebase: bool
+) -> str | None:
+    """驗證策略旗標最多一個被選; 回傳錯誤訊息或 None。"""
+    selected = [name for name, on in (
+        ("--merge", merge),
+        ("--squash", squash),
+        ("--rebase", rebase),
+    ) if on]
+    if len(selected) > 1:
+        return (
+            "策略旗標互斥, 只能選擇一個: "
+            + ", ".join(selected)
+        )
+    return None
+
+
+def _format_apply_command(
+    *,
+    target: str,
+    apply_hash: str,
+    merge: bool,
+    squash: bool,
+    rebase: bool,
+    delete_branch: bool,
+) -> str:
+    """組成「pr_merge --apply <hash> [--strategy] [--delete-branch]」範例字串。"""
+    parts = ["pr_merge", "--apply", apply_hash]
+    if merge:
+        parts.append("--merge")
+    if squash:
+        parts.append("--squash")
+    if rebase:
+        parts.append("--rebase")
+    if delete_branch:
+        parts.append("--delete-branch")
+    parts.append(target)
+    return " ".join(parts)
+
+
+def _run_check(
+    pr: str | None,
+    *,
+    timeout: int,
+    interval: int,
+    kilo: bool,
+    owner: str,
+    name: str,
+    number: int,
+) -> dict[str, Any]:
+    """執行完整檢查流程, 回傳 final view (含 updatedAt) 以便計算 hash。
+
+    任一階段失敗 (fast screening / CI/kilo fail-fast / threads / final screening)
+    都會以 typer.Exit 離開, 不會回到 caller。
+    """
+    fast_view = _gh_pr_view(pr, _FAST_VIEW_FIELDS)
+    err = fast_mergeability_error(fast_view)
+    if err is not None:
+        typer.secho(f"✗ {err}", fg="red", err=True)
+        typer.echo(
+            f"提示: 直接執行 {pr or '當前分支的 PR'} 不會通過 fast screening",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # _wait 內部已處理 CI/kilo fail-fast。
+    _wait(pr, timeout, interval, kilo)
+
+    # threads 檢查
+    threads = _fetch_threads(owner, name, number)
+    unresolved = [t for t in threads if not t.get("isResolved")]
+    _print_threads(threads)
+    if unresolved:
+        typer.secho(
+            f"✗ 仍有 {len(unresolved)} 個未解決 review threads, 不可 merge",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # final 重查 mergeStateStatus/mergeable/updatedAt
+    final_view = _gh_pr_view(pr, _FINAL_VIEW_FIELDS)
+    err = final_mergeability_error(final_view)
+    if err is not None:
+        typer.secho(f"✗ {err}", fg="red", err=True)
+        typer.echo(
+            "提示: PR 尚未進入可合併狀態; 請先解決衝突或等待 CI 跑完",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return final_view
+
+
+def main(
+    pr: Annotated[
+        str | None,
+        typer.Option("--pr", help="PR 編號或 URL (省略則用當前分支的 PR)"),
+    ] = None,
+    timeout: Annotated[
+        int,
+        typer.Option("--timeout", help="超時秒數"),
+    ] = 15 * 60,
+    interval: Annotated[
+        int,
+        typer.Option("--interval", help="輪詢間隔秒數"),
+    ] = 30,
+    kilo: Annotated[
+        bool,
+        typer.Option(
+            "--kilo/--no-kilo",
+            help="是否等待 kilo-code-bot review (GitHub repo 未裝時用 --no-kilo)",
+        ),
+    ] = True,
+    list_only: Annotated[
+        bool,
+        typer.Option(
+            "--list",
+            help="只列出 review threads, 不等待 CI/kilo",
+        ),
+    ] = False,
+    resolve: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--resolve",
+            help="解決 review thread (完整 thread ID 或 #N 索引; 可重複或逗號分隔)",
+        ),
+    ] = None,
+    apply_hash: Annotated[
+        str | None,
+        typer.Option(
+            "--apply",
+            help="重驗證後依四碼確認碼執行 merge",
+        ),
+    ] = None,
+    merge: Annotated[bool, typer.Option("--merge")] = False,
+    squash: Annotated[bool, typer.Option("--squash")] = False,
+    rebase: Annotated[bool, typer.Option("--rebase")] = False,
+    delete_branch: Annotated[
+        bool,
+        typer.Option(
+            "--delete-branch",
+            help="merge 後刪除本地與遠端 branch",
+        ),
+    ] = False,
+) -> None:
+    """等待 PR 的 CI 與 kilo review 完成, 列出 review threads, 並在確認後執行 merge。
+
+    預設使用當前分支的 PR, 每 --interval 秒輪詢一次。預設只檢查並輸出
+    確認碼; 只有 --apply <hash> 通過同樣重驗證後才會真正呼叫 gh pr merge。
+
+    退出碼:
+      0  檢查通過 (apply 模式時含 merge 成功)
+      1  CI / kilo / threads / mergeability 任一項失敗, 或 --apply hash 不符
+      2  超時
+      3  gh CLI 錯誤 (例如當前分支沒有 PR, 或 gh 未安裝)
+    """
+    # 取得 PR 基本資訊 (resolve / list / 預設流程都需要)
+    view = _gh_pr_view(pr, "number,url")
+    owner, name, number = _parse_repo(view.get("url", ""))
+    target = view.get("url") or (pr or "")
+
+    # --apply / --list / --resolve 互斥。
+    modes = [bool(apply_hash), bool(list_only), resolve is not None]
+    if sum(modes) > 1:
+        typer.secho(
+            "--apply / --list / --resolve 互斥, 不可同時指定",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(3)
+
+    # 策略旗標互斥。
+    err = _validate_strategy_flags(merge, squash, rebase)
+    if err is not None:
+        typer.secho(err, fg="red", err=True)
+        raise typer.Exit(3)
+
+    # --resolve 模式: 解決指定 threads 後離開, 不等待。
+    if resolve is not None:
+        ids = _expand_resolve_ids(resolve, owner, name, number)
+        if not ids:
+            typer.secho("未提供任何 thread ID", fg="red", err=True)
+            raise typer.Exit(3)
+        ok = 0
+        for tid in ids:
+            if _resolve_thread(tid):
+                typer.secho(f"✓ 已解決 {tid}", fg="green")
+                ok += 1
+            else:
+                typer.secho(f"✗ 解決失敗 {tid}", fg="red", err=True)
+        typer.echo(f"已解決 {ok}/{len(ids)} 個 thread")
+        raise typer.Exit(0 if ok == len(ids) else 1)
+
+    # --list 模式: 直接列出 threads, 不等待。
+    if list_only:
+        typer.echo(f"PR #{view.get('number')} → {view.get('url')}")
+        threads = _fetch_threads(owner, name, number)
+        _print_threads(threads)
+        raise typer.Exit(0)
+
+    # 預設 / --apply 模式: 跑完整檢查流程。
+    final_view = _run_check(
+        pr,
+        timeout=timeout,
+        interval=interval,
+        kilo=kilo,
+        owner=owner,
+        name=name,
+        number=number,
+    )
+
+    updated_at = final_view.get("updatedAt") or ""
+    current_hash = confirmation_hash(updated_at)
+    number_val = final_view.get("number")
+    url_val = final_view.get("url")
+    head = final_view.get("headRefName") or "?"
+    base = final_view.get("baseRefName") or "?"
+
+    typer.echo()
+    typer.echo(f"PR #{number_val} → {url_val}")
+    typer.echo(f"分支: {head} → {base}")
+    typer.secho("PR 可合併", fg="green", bold=True)
+    typer.echo(f"確認碼: {current_hash}")
+
+    apply_cmd = _format_apply_command(
+        target=target,
+        apply_hash=current_hash,
+        merge=merge,
+        squash=squash,
+        rebase=rebase,
+        delete_branch=delete_branch,
+    )
+    typer.echo(f"執行: {apply_cmd}")
+
+    if apply_hash is None:
+        raise typer.Exit(0)
+
+    # --apply 模式: 驗證 hash 並呼叫 gh pr merge。
+    normalized = apply_hash.strip().lower()
+    if not is_valid_confirmation_hash(normalized):
+        typer.secho(
+            f"✗ --apply 參數需為 4 字符十六進位, 收到: {apply_hash!r}",
+            fg="red",
+            err=True,
+        )
+        typer.echo(f"請改用: {apply_cmd}")
+        raise typer.Exit(1)
+    if normalized != current_hash:
+        typer.secho(
+            "✗ 確認碼與當前 PR updatedAt 不符 (PR 可能剛更新); "
+            "請重新執行 pr_merge 取得最新確認碼",
+            fg="red",
+            err=True,
+        )
+        typer.echo(f"請改用: {apply_cmd}")
+        raise typer.Exit(1)
+
+    # 組合 gh pr merge 指令: 目標 + 唯一一個策略 + (可選) --delete-branch。
+    strategy_flag = _select_strategy(merge, squash, rebase)
+    merge_cmd = ["gh", "pr", "merge", target]
+    if strategy_flag is not None:
+        merge_cmd.append(strategy_flag)
+    if delete_branch:
+        merge_cmd.append("--delete-branch")
+    try:
+        _run_gh(merge_cmd)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip() or str(exc)
+        typer.secho(f"gh pr merge 失敗: {stderr}", fg="red", err=True)
+        raise typer.Exit(exc.returncode or 1) from exc
+    typer.secho(f"✓ 已送出 merge: {' '.join(merge_cmd)}", fg="green")
+    raise typer.Exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        typer.run(main)
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
