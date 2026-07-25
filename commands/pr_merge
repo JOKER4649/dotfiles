@@ -153,8 +153,11 @@ def _gh_pr_view(pr: str | None, fields: str) -> dict:
         stderr = (e.stderr or "").strip() or str(e)
         typer.secho(f"gh pr view 失敗: {stderr}", fg="red", err=True)
         raise typer.Exit(3) from e
+    except OSError as e:
+        detail = str(e).strip() or e.__class__.__name__
+        typer.secho(f"gh pr view 失敗: {detail}", fg="red", err=True)
+        raise typer.Exit(3) from e
     return json.loads(r.stdout)
-
 
 def _parse_repo(url: str) -> tuple[str, str, int]:
     """從 PR URL 解析 (owner, repo, number)。
@@ -179,7 +182,29 @@ def _gh_graphql(query: str, **variables) -> dict:
         stderr = (e.stderr or "").strip() or str(e)
         typer.secho(f"gh api graphql 失敗: {stderr}", fg="red", err=True)
         raise typer.Exit(3) from e
-    return json.loads(r.stdout)
+    except OSError as e:
+        detail = str(e).strip() or e.__class__.__name__
+        typer.secho(f"gh api graphql 失敗: {detail}", fg="red", err=True)
+        raise typer.Exit(3) from e
+
+    try:
+        payload = json.loads(r.stdout)
+    except (TypeError, json.JSONDecodeError) as e:
+        detail = str(e).strip() or e.__class__.__name__
+        typer.secho(
+            f"gh api graphql 回應不是有效 JSON: {detail}",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(3) from e
+    if not isinstance(payload, dict):
+        typer.secho("gh api graphql 回應格式錯誤: 頂層不是 object", fg="red", err=True)
+        raise typer.Exit(3)
+    if payload.get("errors"):
+        details = json.dumps(payload["errors"], ensure_ascii=False)
+        typer.secho(f"gh api graphql 回應含 errors: {details}", fg="red", err=True)
+        raise typer.Exit(3)
+    return payload
 
 
 # ---- CI / kilo 判讀 ----
@@ -282,33 +307,65 @@ def _kilo_status(kilo_checks: list[dict]) -> tuple[bool, bool, bool, str]:
 # ---- review threads ----
 
 
+def _graphql_object(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        typer.secho(
+            f"gh api graphql 回應缺少或無效 {path}",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(3)
+    return value
+
+
+def _graphql_shape_error(path: str) -> None:
+    typer.secho(
+        f"gh api graphql 回應缺少或無效 {path}",
+        fg="red",
+        err=True,
+    )
+    raise typer.Exit(3)
+
+
 def _fetch_threads(owner: str, name: str, number: int) -> list[dict]:
     """取得 PR 的 review threads (含已解決與未解決), 並聚合所有分頁。"""
     nodes: list[dict] = []
     cursor: str | None = None
 
     while True:
-        data = _gh_graphql(
+        payload = _gh_graphql(
             THREADS_QUERY,
             owner=owner,
             name=name,
             number=number,
             cursor=cursor,
         )
-        connection = (
-            data.get("data", {})
-            .get("repository", {})
-            .get("pullRequest", {})
-            .get("reviewThreads", {})
-            or {}
+        payload = _graphql_object(payload, "response")
+        data = _graphql_object(payload.get("data"), "data")
+        repository = _graphql_object(data.get("repository"), "repository")
+        pull_request = _graphql_object(
+            repository.get("pullRequest"), "repository.pullRequest"
         )
-        nodes.extend(connection.get("nodes", []) or [])
-        page_info = connection.get("pageInfo", {}) or {}
-        if not page_info.get("hasNextPage"):
+        connection = _graphql_object(
+            pull_request.get("reviewThreads"), "repository.pullRequest.reviewThreads"
+        )
+
+        page_nodes = connection.get("nodes")
+        if not isinstance(page_nodes, list):
+            _graphql_shape_error("repository.pullRequest.reviewThreads.nodes")
+        page_info = connection.get("pageInfo")
+        if not isinstance(page_info, dict):
+            _graphql_shape_error("repository.pullRequest.reviewThreads.pageInfo")
+        if "hasNextPage" not in page_info or "endCursor" not in page_info:
+            _graphql_shape_error("repository.pullRequest.reviewThreads.pageInfo")
+
+        nodes.extend(page_nodes)
+        if not page_info["hasNextPage"]:
             return nodes
-        cursor = page_info.get("endCursor")
+        cursor = page_info["endCursor"]
         if not cursor:
-            raise typer.Exit("reviewThreads 分頁缺少 endCursor")
+            typer.secho("reviewThreads 分頁缺少 endCursor", fg="red", err=True)
+            raise typer.Exit(3)
 
 
 def _thread_location(thread: dict) -> str:
@@ -337,7 +394,9 @@ def _thread_body_summary(thread: dict) -> str:
     return first_line
 
 
-def _print_threads(threads: list[dict], *, only_unresolved: bool = True) -> list[dict]:
+def _print_threads(
+    threads: list[dict], *, only_unresolved: bool = True, pr: str | None = None
+) -> list[dict]:
     """印出 review threads, 回傳實際顯示的 (未解決) threads 清單。"""
     shown = [t for t in threads if not (only_unresolved and t.get("isResolved"))]
     if not shown:
@@ -358,8 +417,12 @@ def _print_threads(threads: list[dict], *, only_unresolved: bool = True) -> list
         if summary:
             typer.echo(f"      {summary}")
 
+    resolve_hint = "pr_merge"
+    if pr:
+        resolve_hint += f" --pr {pr}"
+
     typer.secho(
-        f"\n解決: pr_merge --resolve '#1'  (索引, 可逗號分隔) 或 --resolve {shown[0].get('id','<ID>')}",
+        f"\n解決: {resolve_hint} --resolve '#1'  (索引, 可逗號分隔) 或 --resolve {shown[0].get('id','<ID>')}",
         fg="bright_black",
     )
     return shown
@@ -369,7 +432,9 @@ def _resolve_thread(thread_id: str) -> bool:
     """解決一個 review thread, 回傳是否成功。"""
     try:
         _gh_graphql(RESOLVE_MUTATION, threadId=thread_id)
-    except typer.Exit:
+    except typer.Exit as exc:
+        if getattr(exc, "exit_code", None) == 3:
+            raise
         return False
     return True
 
@@ -515,7 +580,7 @@ def _wait(
             typer.secho(f"⏱ 超時 ({timeout}s), 停止等待", fg="yellow", err=True)
             raise typer.Exit(2)
 
-        time.sleep(interval)
+        time.sleep(min(interval, max(0, deadline - time.time())))
         data = None
 
     return data, ci_all_success, kilo_exists, kilo_failed, kilo_label
@@ -619,7 +684,7 @@ def _run_check(
     # threads 檢查
     threads = _fetch_threads(owner, name, number)
     unresolved = [t for t in threads if not t.get("isResolved")]
-    _print_threads(threads)
+    _print_threads(threads, pr=pr)
     if unresolved:
         typer.secho(
             f"✗ 仍有 {len(unresolved)} 個未解決 review threads, 不可 merge",
@@ -746,7 +811,7 @@ def main(
     if list_only:
         typer.echo(f"PR #{view.get('number')} → {view.get('url')}")
         threads = _fetch_threads(owner, name, number)
-        _print_threads(threads)
+        _print_threads(threads, pr=pr)
         raise typer.Exit(0)
 
     # 預設 / --apply 模式: 跑完整檢查流程。
@@ -816,9 +881,25 @@ def main(
     try:
         _run_gh(merge_cmd)
     except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip() or str(exc)
-        typer.secho(f"gh pr merge 失敗: {stderr}", fg="red", err=True)
+        diagnostics = [f"returncode={exc.returncode}"]
+        stderr = (getattr(exc, "stderr", None) or "").strip()
+        stdout = (getattr(exc, "stdout", None) or "").strip()
+        if stderr:
+            diagnostics.append(f"stderr: {stderr}")
+        if stdout:
+            diagnostics.append(f"stdout: {stdout}")
+        if not stderr and not stdout:
+            diagnostics.append(str(exc))
+        typer.secho(
+            f"gh pr merge 失敗: {'; '.join(diagnostics)}",
+            fg="red",
+            err=True,
+        )
         raise typer.Exit(exc.returncode or 1) from exc
+    except OSError as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        typer.secho(f"gh pr merge 失敗: {detail}", fg="red", err=True)
+        raise typer.Exit(3) from exc
     typer.secho(f"✓ 已送出 merge: {' '.join(merge_cmd)}", fg="green")
     raise typer.Exit(0)
 

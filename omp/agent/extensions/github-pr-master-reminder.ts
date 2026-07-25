@@ -19,6 +19,12 @@ function normalizeShellCommand(command: string): string {
 
   for (let i = 0; i < command.length; i += 1) {
     const char = command[i];
+    // ANSI-C quoted token: `$'merge'` has a sigil before the quote.
+    // Drop both delimiters so its content remains a comparable command token.
+    if (char === "$" && command[i + 1] === "'") {
+      i += 1;
+      continue;
+    }
     if (char === "\\") {
       const next = command[i + 1];
       if (next === "\n") {

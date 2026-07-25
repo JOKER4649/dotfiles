@@ -137,6 +137,18 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(len(shown), 1)
         self.assertIn("pr_merge --resolve '#1'", output.getvalue())
         self.assertNotIn("pr_merge --resolve #1", output.getvalue())
+    def test_print_threads_includes_explicit_target_in_index_hint(self) -> None:
+        output = io.StringIO()
+        target = "https://github.com/o/r/pull/7"
+        with redirect_stdout(output):
+            shown = pr_merge._print_threads([_unresolved_thread()], pr=target)
+
+        self.assertEqual(len(shown), 1)
+        self.assertIn(
+            "pr_merge --pr https://github.com/o/r/pull/7 --resolve '#1'",
+            output.getvalue(),
+        )
+
 
 
 class ReviewThreadTests(unittest.TestCase):
@@ -187,6 +199,103 @@ class ReviewThreadTests(unittest.TestCase):
         self.assertIn("pageInfo", calls[0]["query"])
         self.assertIn("after: $cursor", calls[0]["query"])
 
+    def test_fetch_threads_rejects_missing_graphql_shape(self) -> None:
+        malformed = [
+            (None, "response"),
+            ({}, "data"),
+            ({"data": {}}, "repository"),
+            ({"data": {"repository": None}}, "repository"),
+            ({"data": {"repository": {"pullRequest": None}}}, "pullRequest"),
+            (
+                {"data": {"repository": {"pullRequest": {"reviewThreads": None}}}},
+                "reviewThreads",
+            ),
+            (
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {"reviewThreads": {"pageInfo": {}}}
+                        }
+                    }
+                },
+                "nodes",
+            ),
+            (
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {"reviewThreads": {"nodes": []}}
+                        }
+                    }
+                },
+                "pageInfo",
+            ),
+        ]
+
+        for payload, missing_part in malformed:
+            with self.subTest(missing_part=missing_part):
+                output = io.StringIO()
+                with mock.patch.object(
+                    pr_merge, "_gh_graphql", return_value=payload
+                ), redirect_stderr(output):
+                    with self.assertRaises(typer.Exit) as raised:
+                        pr_merge._fetch_threads("o", "r", 7)
+                self.assertEqual(raised.exception.exit_code, 3)
+                self.assertIn(missing_part, output.getvalue())
+
+
+
+class GhBoundaryTests(unittest.TestCase):
+    def test_pr_view_missing_gh_exits_three_without_traceback(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(
+            pr_merge, "_run_gh", side_effect=FileNotFoundError(2, "gh not found")
+        ), redirect_stderr(output):
+            with self.assertRaises(typer.Exit) as raised:
+                pr_merge._gh_pr_view(None, "number")
+
+        self.assertEqual(raised.exception.exit_code, 3)
+        self.assertIn("gh pr view 失敗", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
+    def test_graphql_missing_gh_exits_three_without_traceback(self) -> None:
+        output = io.StringIO()
+        with mock.patch.object(
+            pr_merge, "_run_gh", side_effect=OSError("gh unavailable")
+        ), redirect_stderr(output):
+            with self.assertRaises(typer.Exit) as raised:
+                pr_merge._gh_graphql("query { viewer { login } }")
+
+        self.assertEqual(raised.exception.exit_code, 3)
+        self.assertIn("gh api graphql 失敗", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
+    def test_graphql_top_level_errors_exit_three(self) -> None:
+        output = io.StringIO()
+        response = _completed(
+            ["gh", "api", "graphql"],
+            stdout=json.dumps({"errors": [{"message": "rate limit"}]}),
+        )
+        with mock.patch.object(pr_merge, "_run_gh", return_value=response), redirect_stderr(
+            output
+        ):
+            with self.assertRaises(typer.Exit) as raised:
+                pr_merge._gh_graphql("query { viewer { login } }")
+
+        self.assertEqual(raised.exception.exit_code, 3)
+        self.assertIn("rate limit", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
+    def test_resolve_graphql_exit_three_is_not_downgraded(self) -> None:
+        with mock.patch.object(
+            pr_merge, "_gh_graphql", side_effect=typer.Exit(3)
+        ):
+            with self.assertRaises(typer.Exit) as raised:
+                pr_merge._resolve_thread("PRRT_abc")
+
+        self.assertEqual(raised.exception.exit_code, 3)
+
+
 
 class _FlowRunner:
     """執行 pr_merge.main 並把外部 I/O 換成可預期佇列。
@@ -200,11 +309,19 @@ class _FlowRunner:
         threads_payloads: list[list[dict[str, Any]]] | None = None,
         graphql_payloads: list[dict[str, Any]] | None = None,
         gh_merge_returncode: int = 0,
+        gh_merge_error: BaseException | None = None,
+        gh_merge_stdout: str = "",
+        gh_merge_stderr: str | None = None,
+        real_fetch_threads: bool = False,
     ) -> None:
         self.pr_view_payloads = list(pr_view_payloads)
         self.threads_payloads = list(threads_payloads or [])
         self.graphql_payloads = list(graphql_payloads or [])
         self.gh_merge_returncode = gh_merge_returncode
+        self.gh_merge_error = gh_merge_error
+        self.gh_merge_stdout = gh_merge_stdout
+        self.gh_merge_stderr = gh_merge_stderr
+        self.real_fetch_threads = real_fetch_threads
         self.pr_view_calls: list[list[str]] = []
         self.gh_merge_calls: list[list[str]] = []
 
@@ -226,11 +343,18 @@ class _FlowRunner:
                 return _completed(args, 0, json.dumps(payload))
             if args[:3] == ["gh", "pr", "merge"]:
                 gh_merge_calls.append(args)
+                if self.gh_merge_error is not None:
+                    raise self.gh_merge_error
+                stderr = (
+                    self.gh_merge_stderr
+                    if self.gh_merge_stderr is not None
+                    else ("" if self.gh_merge_returncode == 0 else "merge failed")
+                )
                 return _completed(
                     args,
                     self.gh_merge_returncode,
-                    "",
-                    "" if self.gh_merge_returncode == 0 else "merge failed",
+                    self.gh_merge_stdout,
+                    stderr,
                 )
             # 其他一律回傳空 JSON 防止下游 NoneType 爆炸
             return _completed(args, 0, "{}")
@@ -254,9 +378,18 @@ class _FlowRunner:
         old_argv = sys.argv
         sys.argv = ["pr_merge", *argv]
         try:
+            fetch_threads_patch = (
+                mock.patch.object(
+                    pr_merge, "_fetch_threads", wraps=pr_merge._fetch_threads
+                )
+                if self.real_fetch_threads
+                else mock.patch.object(
+                    pr_merge, "_fetch_threads", side_effect=fake_fetch_threads
+                )
+            )
             with mock.patch.object(pr_merge, "_run_gh", side_effect=fake_run_gh), \
                  mock.patch.object(pr_merge, "_gh_graphql", side_effect=fake_gh_graphql), \
-                 mock.patch.object(pr_merge, "_fetch_threads", side_effect=fake_fetch_threads), \
+                 fetch_threads_patch, \
                  mock.patch.object(pr_merge.time, "sleep", side_effect=lambda s: None), \
                  redirect_stdout(stdout), redirect_stderr(stderr):
                 try:
@@ -502,6 +635,38 @@ class CommandFlowTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(runner.gh_merge_calls, [])
 
+    def test_thread_hint_includes_explicit_pr_in_default_flow(self) -> None:
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(),
+            ],
+            threads_payloads=[[_unresolved_thread()]],
+        )
+        code, stdout, _ = runner(argv=["--pr", "431"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("pr_merge --pr 431 --resolve '#1'", stdout)
+        self.assertEqual(runner.gh_merge_calls, [])
+
+    def test_malformed_threads_exit_three_without_merge(self) -> None:
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(status_check_rollup=_ci_view()["statusCheckRollup"]),
+                _final_view(),
+            ],
+            graphql_payloads=[{}],
+            real_fetch_threads=True,
+        )
+        code, _, stderr = runner(argv=["--pr", "431", "--apply", "b08e"])
+
+        self.assertEqual(code, 3)
+        self.assertIn("gh api graphql", stderr)
+        self.assertEqual(runner.gh_merge_calls, [])
+
     def test_final_blocked_state_does_not_emit_apply_command(self) -> None:
         # threads 已解, final mergeStateStatus=BLOCKED → exit 1, 不應印 apply。
         runner = _FlowRunner(
@@ -613,6 +778,49 @@ class CommandFlowTests(unittest.TestCase):
         self.assertNotIn("--auto", merge_cmd)
         self.assertIn("https://github.com/o/r/pull/7", merge_cmd)
 
+    def test_merge_failure_preserves_stderr_stdout_and_returncode(self) -> None:
+        merge_error = subprocess.CalledProcessError(
+            7,
+            ["gh", "pr", "merge"],
+            output="stdout diagnostic",
+            stderr="stderr diagnostic",
+        )
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(updated_at="2026-07-25T00:00:00Z"),
+            ],
+            threads_payloads=[[]],
+            gh_merge_error=merge_error,
+        )
+        code, stdout, stderr = runner(argv=["--apply", "b08e"])
+
+        self.assertEqual(code, 7)
+        self.assertIn("stderr diagnostic", stderr)
+        self.assertIn("stdout diagnostic", stderr)
+        self.assertIn("returncode=7", stderr)
+        self.assertNotIn("✓ 已送出 merge", stdout)
+
+    def test_missing_gh_during_merge_exits_three(self) -> None:
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(),
+                _ci_view(),
+                _final_view(updated_at="2026-07-25T00:00:00Z"),
+            ],
+            threads_payloads=[[]],
+            gh_merge_error=FileNotFoundError(2, "gh not found"),
+        )
+        code, stdout, stderr = runner(argv=["--apply", "b08e"])
+
+        self.assertEqual(code, 3)
+        self.assertNotIn("✓ 已送出 merge", stdout)
+        self.assertIn("gh pr merge 失敗", stderr)
+        self.assertNotIn("Traceback", stderr)
+
     def test_apply_with_squash_strategy_passes_flag(self) -> None:
         # --squash 應該傳給 gh pr merge。
         runner = _FlowRunner(
@@ -665,6 +873,47 @@ class CommandFlowTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(runner.gh_merge_calls, [])
 
+
+
+class WaitTests(unittest.TestCase):
+    def test_wait_clamps_sleep_to_remaining_deadline(self) -> None:
+        now = [0.0]
+        sleeps: list[float] = []
+        pending = {
+            "number": 7,
+            "url": "https://github.com/o/r/pull/7",
+            "headRefName": "feat",
+            "baseRefName": "main",
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "unit",
+                    "status": "IN_PROGRESS",
+                    "conclusion": None,
+                }
+            ],
+        }
+
+        def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        output = io.StringIO()
+        with mock.patch.object(pr_merge, "_gh_pr_view", return_value=pending), \
+             mock.patch.object(pr_merge.time, "time", side_effect=lambda: now[0]), \
+             mock.patch.object(pr_merge.time, "sleep", side_effect=fake_sleep), \
+             redirect_stdout(output), redirect_stderr(io.StringIO()):
+            with self.assertRaises(typer.Exit) as raised:
+                pr_merge._wait(
+                    "431",
+                    timeout=1,
+                    interval=30,
+                    kilo=False,
+                    initial_view=pending,
+                )
+
+        self.assertEqual(raised.exception.exit_code, 2)
+        self.assertEqual(sleeps, [1])
 
 if __name__ == "__main__":
     unittest.main()
