@@ -159,7 +159,13 @@ class ReviewThreadTests(unittest.TestCase):
                     "repository": {
                         "pullRequest": {
                             "reviewThreads": {
-                                "nodes": [{"id": "thread-1", "isResolved": False}],
+                                "nodes": [
+                                    {
+                                        "id": "thread-1",
+                                        "isResolved": False,
+                                        "comments": {"nodes": []},
+                                    }
+                                ],
                                 "pageInfo": {
                                     "hasNextPage": True,
                                     "endCursor": "cursor-1",
@@ -174,7 +180,13 @@ class ReviewThreadTests(unittest.TestCase):
                     "repository": {
                         "pullRequest": {
                             "reviewThreads": {
-                                "nodes": [{"id": "thread-2", "isResolved": True}],
+                                "nodes": [
+                                    {
+                                        "id": "thread-2",
+                                        "isResolved": True,
+                                        "comments": {"nodes": []},
+                                    }
+                                ],
                                 "pageInfo": {
                                     "hasNextPage": False,
                                     "endCursor": None,
@@ -242,6 +254,51 @@ class ReviewThreadTests(unittest.TestCase):
                         pr_merge._fetch_threads("o", "r", 7)
                 self.assertEqual(raised.exception.exit_code, 3)
                 self.assertIn(missing_part, output.getvalue())
+
+    def test_fetch_threads_rejects_invalid_nodes_and_comments_shape(self) -> None:
+        def payload_for(node: Any) -> dict[str, Any]:
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [node],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+
+        malformed = [
+            (None, "reviewThreads.nodes[0]"),
+            (
+                {"id": "thread-1", "comments": None},
+                "reviewThreads.nodes[0].comments",
+            ),
+            (
+                {"id": "thread-1", "comments": {"nodes": None}},
+                "reviewThreads.nodes[0].comments.nodes",
+            ),
+            (
+                {"id": "thread-1", "comments": {"nodes": [None]}},
+                "reviewThreads.nodes[0].comments.nodes[0]",
+            ),
+        ]
+
+        for node, invalid_part in malformed:
+            with self.subTest(invalid_part=invalid_part):
+                output = io.StringIO()
+                with mock.patch.object(
+                    pr_merge, "_gh_graphql", return_value=payload_for(node)
+                ), redirect_stderr(output):
+                    with self.assertRaises(typer.Exit) as raised:
+                        pr_merge._fetch_threads("o", "r", 7)
+                self.assertEqual(raised.exception.exit_code, 3)
+                self.assertIn(invalid_part, output.getvalue())
 
 
 

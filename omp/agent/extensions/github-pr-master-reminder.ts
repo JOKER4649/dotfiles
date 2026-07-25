@@ -8,20 +8,137 @@ export const GH_PR_CREATE_EDIT_RE = /\bgh\s+pr\s+(?:create|edit)\b/;
 /** 匹配正規化後的直接 gh pr merge 命令。 */
 export const GH_PR_MERGE_RE = /\bgh\s+pr\s+merge\b/;
 
+const ANSI_C_SIMPLE_ESCAPES: Record<string, string> = {
+  a: "\u0007",
+  b: "\b",
+  e: "\u001b",
+  E: "\u001b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+};
+
+function hexDigitValue(char: string | undefined): number | undefined {
+  if (char === undefined) return undefined;
+  if (char >= "0" && char <= "9") return char.charCodeAt(0) - 48;
+  if (char >= "a" && char <= "f") return char.charCodeAt(0) - 87;
+  if (char >= "A" && char <= "F") return char.charCodeAt(0) - 55;
+  return undefined;
+}
+
+function decodeAnsiCQuote(
+  command: string,
+  start: number,
+): { value: string; end: number } | undefined {
+  let value = "";
+
+  for (let i = start + 2; i < command.length; i += 1) {
+    const char = command[i];
+    if (char === "'") return { value, end: i };
+    if (char !== "\\") {
+      value += char;
+      continue;
+    }
+
+    const next = command[i + 1];
+    if (next === undefined) {
+      value += "\\";
+      continue;
+    }
+    if (next === "\n") {
+      i += 1;
+      continue;
+    }
+
+    const simpleEscape = ANSI_C_SIMPLE_ESCAPES[next];
+    if (simpleEscape !== undefined) {
+      value += simpleEscape;
+      i += 1;
+      continue;
+    }
+
+    if (next === "x") {
+      let code = 0;
+      let digits = 0;
+      for (let offset = 0; offset < 2; offset += 1) {
+        const digit = hexDigitValue(command[i + 2 + offset]);
+        if (digit === undefined) break;
+        code = code * 16 + digit;
+        digits += 1;
+      }
+      if (digits > 0) {
+        value += String.fromCodePoint(code);
+        i += digits + 1;
+        continue;
+      }
+    }
+
+    if (next === "u" || next === "U") {
+      const width = next === "u" ? 4 : 8;
+      let code = 0;
+      let valid = true;
+      for (let offset = 0; offset < width; offset += 1) {
+        const digit = hexDigitValue(command[i + 2 + offset]);
+        if (digit === undefined) {
+          valid = false;
+          break;
+        }
+        code = code * 16 + digit;
+      }
+      if (valid && code <= 0x10ffff) {
+        value += String.fromCodePoint(code);
+        i += width + 1;
+        continue;
+      }
+    }
+
+    if (next >= "0" && next <= "7") {
+      let code = 0;
+      let digits = 0;
+      for (; digits < 3; digits += 1) {
+        const digit = command[i + 1 + digits];
+        if (digit < "0" || digit > "7") break;
+        code = code * 8 + Number(digit);
+      }
+      value += String.fromCodePoint(code);
+      i += digits;
+      continue;
+    }
+
+    // Bash removes the backslash for an unrecognised ANSI-C escape.
+    value += next;
+    i += 1;
+  }
+
+  return undefined;
+}
+
 /**
  * 將 bash 常見的等價寫法化為可供 guard 比對的最小形式。
  *
  * 這不是完整 shell parser: 只移除引號、保留其內容，並解開反斜線
- * escape；反斜線接換行則移除，對應 shell 的續行語意。
+ * escape；反斜線接換行則移除，對應 shell 的續行語意。ANSI-C 引號的
+ * 常見數值 escape 也在此解碼，避免可執行的 `\x65` 等形式繞過 guard。
  */
 function normalizeShellCommand(command: string): string {
   let normalized = "";
 
   for (let i = 0; i < command.length; i += 1) {
     const char = command[i];
-    // ANSI-C/locale quoted token: `$'merge'` / `$"merge"` has a sigil
-    // before the quote. Drop the sigil so the quote stripping below keeps
-    // its content as a comparable command token.
+    if (char === "$" && command[i + 1] === "'") {
+      const decoded = decodeAnsiCQuote(command, i);
+      if (decoded !== undefined) {
+        normalized += decoded.value;
+        i = decoded.end;
+        continue;
+      }
+    }
+    // Locale quoted token: `$"merge"` has a sigil before the quote.
     if (
       char === "$" &&
       (command[i + 1] === "'" || command[i + 1] === '"')

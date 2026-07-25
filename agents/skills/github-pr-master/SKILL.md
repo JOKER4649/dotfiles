@@ -29,7 +29,7 @@ description: 建立 review-ready 的 GitHub PR 並在合併前完成所有檢查
 
 ### 3. 處理 review → 詳見 `reference/review.md`
 
-- 讀取 kilo 的 review comments
+- 讀取 kilo（與 gemini）的 review comments
 - 按回應原則修復 / 採納 / 建 issue / 拒絕
 - 已處理的 thread 用 `pr-review-thread_resolve` 解決
 

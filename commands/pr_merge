@@ -353,6 +353,25 @@ def _fetch_threads(owner: str, name: str, number: int) -> list[dict]:
         page_nodes = connection.get("nodes")
         if not isinstance(page_nodes, list):
             _graphql_shape_error("repository.pullRequest.reviewThreads.nodes")
+        for node_index, node in enumerate(page_nodes):
+            node_path = (
+                "repository.pullRequest.reviewThreads"
+                f".nodes[{node_index}]"
+            )
+            if not isinstance(node, dict):
+                _graphql_shape_error(node_path)
+            comments = node.get("comments")
+            if not isinstance(comments, dict):
+                _graphql_shape_error(f"{node_path}.comments")
+            comment_nodes = comments.get("nodes")
+            if not isinstance(comment_nodes, list):
+                _graphql_shape_error(f"{node_path}.comments.nodes")
+            for comment_index, comment in enumerate(comment_nodes):
+                if not isinstance(comment, dict):
+                    _graphql_shape_error(
+                        f"{node_path}.comments.nodes[{comment_index}]"
+                    )
+
         page_info = connection.get("pageInfo")
         if not isinstance(page_info, dict):
             _graphql_shape_error("repository.pullRequest.reviewThreads.pageInfo")
