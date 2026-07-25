@@ -241,21 +241,42 @@ def _kilo_status(kilo_checks: list[dict]) -> tuple[bool, bool, bool, str]:
     if not kilo_checks:
         return False, False, False, "absent"
 
-    check = kilo_checks[0]
-    status = check.get("status")
-    conclusion = (check.get("conclusion") or "").upper()
+    total = len(kilo_checks)
+    completed = 0
+    failures: list[str] = []
+    conclusions: list[str] = []
+    pending_statuses: list[str] = []
 
-    if status == "COMPLETED":
-        failed = conclusion in FAILURE_CONCLUSIONS
-        label = f"completed ({conclusion or 'NONE'})"
-        return True, True, failed, label
+    for check in kilo_checks:
+        status = (check.get("status") or "").upper()
+        conclusion = (check.get("conclusion") or "").upper()
+        if status == "COMPLETED":
+            completed += 1
+            conclusion_label = conclusion or "NONE"
+            conclusions.append(conclusion_label)
+            if conclusion in FAILURE_CONCLUSIONS:
+                failures.append(conclusion_label)
+        else:
+            pending_statuses.append(status or "UNKNOWN")
 
-    label = (status or "unknown").lower()
-    if status == "IN_PROGRESS":
-        label = "in_progress"
-    elif status == "QUEUED":
-        label = "queued"
-    return True, False, False, label
+    done = completed == total
+    failed = bool(failures)
+
+    if total == 1:
+        if done:
+            return True, True, failed, f"completed ({conclusions[0]})"
+        return True, False, False, pending_statuses[0].lower()
+
+    if done:
+        labels = list(dict.fromkeys(conclusions))
+        label = f"completed ({', '.join(labels)})"
+    else:
+        label = f"{completed}/{total} done"
+        if failed:
+            labels = list(dict.fromkeys(failures))
+            label += f", failure: {', '.join(labels)}"
+
+    return True, done, failed, label
 
 
 # ---- review threads ----
@@ -338,7 +359,7 @@ def _print_threads(threads: list[dict], *, only_unresolved: bool = True) -> list
             typer.echo(f"      {summary}")
 
     typer.secho(
-        f"\n解決: pr_merge --resolve #1  (索引, 可逗號分隔) 或 --resolve {shown[0].get('id','<ID>')}",
+        f"\n解決: pr_merge --resolve '#1'  (索引, 可逗號分隔) 或 --resolve {shown[0].get('id','<ID>')}",
         fg="bright_black",
     )
     return shown
@@ -478,10 +499,10 @@ def _wait(
         if ci_failed:
             typer.secho(f"CI: {ci_summary}", fg="red", err=True)
             raise typer.Exit(1)
-        # fail-fast: kilo 已 COMPLETED 且結論為失敗, 立即退出。
-        if kilo and kilo_done and kilo_failed:
+        # fail-fast: kilo 任一已知失敗的 CheckRun 都立即退出。
+        if kilo and kilo_failed:
             typer.secho(
-                f"Kilo ✗ 完成, 結論為 FAILURE ({kilo_label})",
+                f"Kilo ✗ 已知失敗 ({kilo_label})",
                 fg="red",
                 err=True,
             )

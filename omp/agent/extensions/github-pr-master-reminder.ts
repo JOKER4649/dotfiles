@@ -5,8 +5,44 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 /** 匹配 PR 建立或編輯命令，避免 gh preview 等其他命令誤觸發。 */
 export const GH_PR_CREATE_EDIT_RE = /\bgh\s+pr\s+(?:create|edit)\b/;
 
-/** 匹配直接 gh pr merge 命令。 */
+/** 匹配正規化後的直接 gh pr merge 命令。 */
 export const GH_PR_MERGE_RE = /\bgh\s+pr\s+merge\b/;
+
+/**
+ * 將 bash 常見的等價寫法化為可供 guard 比對的最小形式。
+ *
+ * 這不是完整 shell parser: 只移除引號、保留其內容，並解開反斜線
+ * escape；反斜線接換行則移除，對應 shell 的續行語意。
+ */
+function normalizeShellCommand(command: string): string {
+  let normalized = "";
+
+  for (let i = 0; i < command.length; i += 1) {
+    const char = command[i];
+    if (char === "\\") {
+      const next = command[i + 1];
+      if (next === "\n") {
+        i += 1;
+        continue;
+      }
+      if (next === "\r") {
+        i += command[i + 2] === "\n" ? 2 : 1;
+        continue;
+      }
+      if (next !== undefined) {
+        normalized += next;
+        i += 1;
+        continue;
+      }
+    }
+
+    if (char !== "'" && char !== '"') {
+      normalized += char;
+    }
+  }
+
+  return normalized;
+}
 
 export const GH_PR_CREATE_EDIT_REMINDER =
   "提醒：PR 建立或編輯完成，請重新讀取 `skill://github-pr-master`，確認標題、內文與驗證方式符合流程。";
@@ -24,7 +60,9 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_call", async (event) => {
     if (
       event.toolName === "bash" &&
-      GH_PR_MERGE_RE.test(String(event.input?.command ?? ""))
+      GH_PR_MERGE_RE.test(
+        normalizeShellCommand(String(event.input?.command ?? "")),
+      )
     ) {
       return { block: true, reason: GH_PR_MERGE_BLOCK_REASON };
     }

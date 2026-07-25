@@ -82,6 +82,62 @@ class PureHelperTests(unittest.TestCase):
         }
         self.assertIsNotNone(pr_merge.final_mergeability_error(view))
 
+    def test_kilo_status_aggregates_pending_after_success(self) -> None:
+        checks = [
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review (rerun)",
+                "status": "IN_PROGRESS",
+                "conclusion": None,
+            },
+        ]
+
+        exists, done, failed, label = pr_merge._kilo_status(checks)
+
+        self.assertTrue(exists)
+        self.assertFalse(done)
+        self.assertFalse(failed)
+        self.assertIn("1/2", label)
+
+    def test_kilo_status_reports_failure_after_success(self) -> None:
+        checks = [
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review (rerun)",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+            },
+        ]
+
+        exists, done, failed, label = pr_merge._kilo_status(checks)
+
+        self.assertTrue(exists)
+        self.assertTrue(done)
+        self.assertTrue(failed)
+        self.assertIn("FAILURE", label)
+
+
+    def test_print_threads_quotes_index_hint_for_shell(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            shown = pr_merge._print_threads([_unresolved_thread()])
+
+        self.assertEqual(len(shown), 1)
+        self.assertIn("pr_merge --resolve '#1'", output.getvalue())
+        self.assertNotIn("pr_merge --resolve #1", output.getvalue())
+
 
 class ReviewThreadTests(unittest.TestCase):
     def test_fetch_threads_paginates_and_aggregates_all_pages(self) -> None:
@@ -357,6 +413,77 @@ class CommandFlowTests(unittest.TestCase):
         code, stdout, _ = runner(argv=[])
         self.assertEqual(code, 1)
         # 初始 fast view 已含失敗 rollup, 不應再額外輪詢或進入 threads 階段。
+        self.assertNotIn("未解決 review threads", stdout)
+        self.assertEqual(len(runner.pr_view_calls), 2)
+
+    def test_multiple_kilo_pending_after_success_does_not_ready(self) -> None:
+        rollup = [
+            {
+                "__typename": "CheckRun",
+                "name": "unit",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review (rerun)",
+                "status": "IN_PROGRESS",
+                "conclusion": None,
+            },
+        ]
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(status_check_rollup=rollup),
+            ]
+        )
+
+        code, stdout, _ = runner(argv=["--timeout", "0"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("kilo:", stdout)
+        self.assertNotIn("未解決 review threads", stdout)
+        self.assertEqual(len(runner.pr_view_calls), 2)
+
+    def test_multiple_kilo_failure_after_success_exits_immediately(self) -> None:
+        rollup = [
+            {
+                "__typename": "CheckRun",
+                "name": "unit",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "Kilo Code Review (rerun)",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+            },
+        ]
+        runner = _FlowRunner(
+            pr_view_payloads=[
+                _resolved_view(),
+                _fast_view(status_check_rollup=rollup),
+            ]
+        )
+
+        code, stdout, stderr = runner(argv=[])
+
+        self.assertEqual(code, 1)
+        self.assertIn("kilo:", stdout)
+        self.assertIn("Kilo", stderr)
         self.assertNotIn("未解決 review threads", stdout)
         self.assertEqual(len(runner.pr_view_calls), 2)
 
