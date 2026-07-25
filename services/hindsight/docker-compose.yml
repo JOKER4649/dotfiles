@@ -48,8 +48,19 @@ services:
       retries: 5
       start_period: 20s
 
+# ─────────────────────────────────────────────────────────────
+# 資源限制：防止 hindsight-api RSS 膨脹吃滿主機記憶體。
+# 觀測值：未限制時 RSS 達 24 GB（主機 30 GB 的 80%），嚴重影響穩定性。
+#
+# mem_limit 4g：穩態 ~565 MB，ingest/reflect 尖峰不超過 2 GB，4g 留足空間。
+# cpus 2.0：穩態 0.36%，但 flashrank ONNX reranker 推理 + reflect LLM 呼叫
+#   + embedding batch 處理需要並行 CPU 餘量；2 核讓吞吐尖峰不排隊。
+# OOM 時只殺 container 不拖垮主機。
+# ─────────────────────────────────────────────────────────────
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-latest-slim}
+    mem_limit: 4g
+    cpus: 2.0
     # slim image 的 venv 沒包 flashrank (optional rerank backend)。
     # `uv pip install --python <venv> --link-mode=copy flashrank` 把 wheel
     # 寫進 venv site-packages。首次啟動多 ~5-10s，後續近乎零成本。
@@ -71,11 +82,40 @@ services:
       HINDSIGHT_API_EMBEDDINGS_PROVIDER: openrouter
       HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL: ${HINDSIGHT_EMBEDDINGS_MODEL:-baai/bge-m3}
+      # 降低 embedding batch size：預設 100 在 OpenRouter upstream provider
+      # 高負載時容易 429（engine_overloaded），openai SDK 用盡 3 次 retry
+      # 後報 "No embedding data received"。batch=32 降低單次 API 壓力。
+      #
+      # 注意：429 來自 upstream provider 容量限制，不是 OpenRouter 平台 RPM
+      # 上限。baai/bge-m3 不是 :free variant，OpenRouter free-model 20 RPM
+      # 限制不適用。真正解 429 的是降低 refresh_concurrency（8→2），
+      # batch_size 是次要因素（每 request 計算量更小）。
+      HINDSIGHT_API_EMBEDDINGS_OPENAI_BATCH_SIZE: "32"
 
       # flashrank — ONNX 為基礎、隨 image 內建、不需外部 API key。
       # 多語言涵蓋比 Cohere rerank-multilingual-v3 弱，但對中英混雜內容
       # 已足夠；用 ~200MB RAM 換掉一個新 vendor dependency。
       HINDSIGHT_API_RERANKER_PROVIDER: flashrank
+
+      # ─────────────────────────────────────────────────────────────
+      # 效能調校：降低背景 worker / reflect / maintenance 的開銷。
+      #
+      # 根因：預設 mental_model_refresh_concurrency=8 + worker_max_slots=10
+      # + reflect_max_iterations=10，在 embedding 429 失敗時大量 reflect
+      # worker 同時重試，RSS 膨脹到 24 GB。
+      #
+      # 調整後：
+      #   - refresh_concurrency 8 → 2：同時最多 2 個 mental model refresh
+      #   - worker_max_slots 10 → 3：worker 總並發 task 数 降到 3
+      #   - reflect_max_iterations 10 → 5：限制單次 reflect 的 LLM 呼叫次數
+      #   - reflect_wall_timeout 300 → 120：2 分鐘未完成就中止
+      #   - refresh_tick 60 → 300：5 分鐘才檢查一次，減少觸發頻率
+      # ─────────────────────────────────────────────────────────────
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_CONCURRENCY: "2"
+      HINDSIGHT_API_WORKER_MAX_SLOTS: "3"
+      HINDSIGHT_API_REFLECT_MAX_ITERATIONS: "5"
+      HINDSIGHT_API_REFLECT_WALL_TIMEOUT: "120"
+      HINDSIGHT_API_MENTAL_MODEL_REFRESH_TICK_SECONDS: "300"
 
       # Control Plane (http://127.0.0.1:9999) 的 access key。
       # image 沒 baked 這個 var,沒顯式 map 就不會進 container,UI 會完全 open。
