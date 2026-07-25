@@ -3,22 +3,13 @@
 # requires-python = ">=3.11"
 # dependencies = ["typer"]
 # ///
-"""pr_merge — 等待 PR 的 CI 與 kilo-code-bot review 完成, 列出 review threads,
-並在確認後執行 merge。
+"""GitHub PR 的檢查與受保護合併命令。
 
-預設使用當前分支的 PR (省略 --pr), 輪詢直到 CI 全部完成且 kilo 的
-CheckRun (name 為 "Kilo Code Review") 已 COMPLETED, 接著列出未解決的
-review threads (含 thread ID、路徑、作者、摘要)。
-
-kilo 以 GitHub App 運作, 會在 PR checks 中建立一個 CheckRun; 該
-CheckRun 的 status 即判斷 kilo 當前這一輪是否處理完成的唯一可靠訊號
-(review 物件 body 永遠為空、summary comment 為原地更新, 無法靠評論
-出現判斷增量是否審完)。本工具刻意將 kilo 的 CheckRun 從 CI 統計中
-隔離出來單獨報告, 避免「kilo 抓到 critical」被混進「CI 失敗」語意。
-
-可用 --resolve 批次解決 review thread, 接受完整 thread ID 或 #N 索引
-(後者以當前未解決 threads 的顯示順序為準), 支援重複或逗號分隔。
+預設只執行完整檢查並輸出四碼 confirmation hash；只有
+`--apply <hash>` 在重新檢查並驗證 hash 通過後才執行 merge。
+`--list` / `--resolve` 僅處理 review threads，不等待也不合併。
 """
+
 import hashlib
 import json
 import re
