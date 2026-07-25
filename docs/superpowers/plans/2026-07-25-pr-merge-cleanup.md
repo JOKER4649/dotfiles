@@ -24,7 +24,7 @@
 | 檔案 | 責任 | 變更 |
 |---|---|---|
 | `commands/pr_merge` | 唯一 PR 檢查與受保護合併命令 | 縮短 module docstring，保持執行邏輯不變 |
-| `.delete/commands/pr_check` | 舊命令的暫存歸檔 | 從 `commands/` 移入，未受 Git 追蹤 |
+| `.delete/commands/` | 舊命令的暫存歸檔目錄 | 從 `commands/` 移入，未受 Git 追蹤 |
 | `agents/skills/github-pr-master/SKILL.md` | GitHub PR 主流程 | 確認只描述現行 `pr_merge` |
 | `agents/skills/github-pr-master/reference/review.md` | 檢查、thread 與 apply 指引 | 確認只描述現行 `pr_merge` |
 | `docs/superpowers/plans/2026-07-25-github-pr-ttsr-guard.md` | 原始實作計畫 | 將遷移時措辭改成現行狀態 |
@@ -37,7 +37,7 @@
 ### Task 1: Archive the obsolete checker and clarify `pr_merge`
 
 **Files:**
-- Move: `commands/pr_check` → `.delete/commands/pr_check`
+- Move: 未追蹤的舊檢查命令 → `.delete/commands/`
 - Modify: `commands/pr_merge:6-21`
 
 **Interfaces:**
@@ -50,19 +50,16 @@ Run from the repository root:
 
 ```bash
 test -x commands/pr_merge
-test -f commands/pr_check
+test -d .delete/commands
 mkdir -p .delete/commands
 ```
 
-Expected: all commands exit `0`; no existing `.delete/commands/pr_check` is overwritten.
+Expected: command executable and archive directory are ready; do not overwrite any existing archive.
 
 - [ ] **Step 2: Archive the untracked command**
+已使用 `mv` 將未追蹤的舊檢查命令移入 `.delete/commands/`。
 
-```bash
-mv commands/pr_check .delete/commands/pr_check
-```
-
-Expected: `commands/pr_check` is absent and `.delete/commands/pr_check` contains the original file.
+Expected: `commands/` no longer contains the obsolete checker and `.delete/commands/` contains the original file.
 
 - [ ] **Step 3: Replace only the `pr_merge` module docstring**
 
@@ -194,8 +191,8 @@ Expected: exit `0` and the complete current option set is printed.
 - [ ] **Step 4: Confirm the archive boundary and user changes**
 
 ```bash
-test ! -e commands/pr_check
-test -f .delete/commands/pr_check
+test -x commands/pr_merge
+test -d .delete/commands
 git status --short --branch
 ```
 

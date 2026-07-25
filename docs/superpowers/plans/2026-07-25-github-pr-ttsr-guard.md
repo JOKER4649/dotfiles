@@ -4,13 +4,13 @@
 
 **Goal:** 將 `github-pr-master` 的 PR 流程改成 create/edit 提醒、direct merge 硬阻擋，並以 `pr_merge --apply <hash>` 作為完成所有檢查後的唯一 agent merge 入口。
 
-**Architecture:** 全域 TTSR 在模型生成 direct `gh pr merge` 時提供前置提醒；全域 ExtensionAPI `tool_call` 在工具執行前永久阻止 direct merge，`tool_result` 只對 create/edit 追加品質提醒。原有 `commands/pr_check` 改名並重構為 `commands/pr_merge`：預設執行定位、快速 mergeability 篩選、CI/kilo fail-fast 等待、review threads 檢查、最終 mergeability 重查與短 hash 輸出；只有 `--apply <hash>` 通過同一套重驗證後才呼叫 `gh pr merge`。
+**Architecture:** 全域 TTSR 在模型生成 direct `gh pr merge` 時提供前置提醒；全域 ExtensionAPI `tool_call` 在工具執行前永久阻止 direct merge，`tool_result` 只對 create/edit 追加品質提醒。`commands/pr_merge` 提供完整的 PR 定位、快速 mergeability 篩選、CI/kilo fail-fast 等待、review threads 檢查、最終 mergeability 重查與短 hash 輸出；只有 `--apply <hash>` 通過同一套重驗證後才呼叫 `gh pr merge`。
 
 **Tech Stack:** Python 3.11、PEP 723 `uv run --script`、Typer、GitHub CLI (`gh`)、GitHub GraphQL review threads、TypeScript、Bun、omp TTSR Markdown rules。
 
 ## Global Constraints
 
-- 保留目前 `SKILL.md` / `reference/review.md` 的未提交內容方向，不恢復已刪除的 `wait.py`。
+- 維持 `pr_merge` 作為唯一的 PR 等待與合併入口。
 - `pr_merge` 預設只檢查；只有 `--apply <hash>` 能進入真正 merge。
 - 第二步只拒絕已確認的 `mergeable == CONFLICTING` 或 `mergeStateStatus == DIRTY`；CI 尚未完成的 `BLOCKED`、`UNSTABLE`、`UNKNOWN`、`BEHIND` 先進入等待。
 - CI、kilo 或 review threads 可確定失敗時立即退出；不能因等待其他項目而延遲已知失敗。
@@ -26,7 +26,7 @@
 
 | 檔案 | 責任 | 變更 |
 |---|---|---|
-| `commands/pr_merge` | 全域 PR 檢查與 merge 命令 | 從 `commands/pr_check` 移動並重構主流程、介面、退出碼 |
+| `commands/pr_merge` | 全域 PR 檢查與 merge 命令 | 提供完整主流程、介面與退出碼 |
 | `commands/tests/test_pr_merge.py` | `pr_merge` 純邏輯契約測試 | 新增標準庫 `unittest` 測試 |
 | `omp/agent/rules/github-pr-master-merge.md` | 全域 TTSR 前置提醒 | 新增規則 |
 | `omp/agent/extensions/github-pr-master-reminder.ts` | agent tool-call guard 與 create/edit reminder | 修改事件與 regex 分工 |
@@ -38,7 +38,7 @@
 ### Task 1: Rename and refactor the PR command
 
 **Files:**
-- Move: `commands/pr_check` → `commands/pr_merge`
+- Modify: `commands/pr_merge`
 - Create: `commands/tests/test_pr_merge.py`
 
 **Interfaces:**
@@ -50,10 +50,10 @@
 Run:
 
 ```bash
-git mv commands/pr_check commands/pr_merge
+commands/pr_merge --help
 ```
 
-Keep the existing PEP 723 metadata, shebang, executable bit, and Typer dependency. Change the module docstring and all self-references from `pr_check` to `pr_merge`; do not modify skill files in this task.
+Keep the existing PEP 723 metadata, shebang, executable bit, and Typer dependency. Confirm the module docstring and all self-references describe the current `pr_merge` contract; do not modify skill files in this task.
 
 - [ ] **Step 2: Add deterministic pure helpers and tests first**
 
@@ -332,13 +332,13 @@ git commit -m "feat: 用 ttsr 與 extension 守住 pr merge"
 
 **Interfaces:**
 - Consumes: the command contract from Task 1 and the guard behavior from Task 2.
-- Produces: skill instructions that never tell the agent to call removed `pr_check` or direct `gh pr merge`.
+- Produces: skill instructions that use `pr_merge` for every PR check and merge operation, while keeping direct `gh pr merge` prohibited for the agent.
 
 - [ ] **Step 1: Update the main skill flow**
 
 In `SKILL.md`:
 
-- Replace every workflow reference to `pr_check` with `pr_merge`.
+- Use `pr_merge` for every workflow reference.
 - State that `pr_merge` defaults to check-only and prints a four-character confirmation hash.
 - State that actual merge requires `pr_merge --apply <hash>` and an explicit merge strategy only when needed by `gh`.
 - Add the direct-merge rule: never call `gh pr merge` from the agent; the global ExtensionAPI guard blocks it.
@@ -368,11 +368,11 @@ pr_merge --apply <hash> --squash   # 或 --merge / --rebase
 Search only the relevant tracked paths:
 
 ```text
-pattern: pr_check|wait\.py|gh pr merge
+pattern: pr_merge|gh pr merge
 paths: agents/skills/github-pr-master; commands; omp/agent/extensions; omp/agent/rules
 ```
 
-Expected: no operational skill instruction references removed `pr_check` / `wait.py`; direct `gh pr merge` appears only in the guard explanation and command implementation, never as an agent instruction. Commit only the two skill files:
+Expected: all operational PR instructions use `pr_merge`; direct `gh pr merge` appears only in the guard explanation and command implementation, never as an agent instruction. Commit only the two skill files:
 
 ```bash
 git add agents/skills/github-pr-master/SKILL.md agents/skills/github-pr-master/reference/review.md

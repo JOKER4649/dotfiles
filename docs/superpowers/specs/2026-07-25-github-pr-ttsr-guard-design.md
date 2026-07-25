@@ -12,7 +12,7 @@ omp 的 TTSR 適合在模型串流中命中 `gh pr merge` 時注入前置提醒�
 
 - create/edit 維持低干擾提醒，讓 agent 持續遵循 `github-pr-master` 的 PR 文案與流程規範。
 - 直接由 agent 呼叫 `gh pr merge` 時必須被阻止。
-- 將目前 `pr_check` 改成目的明確的完整 `pr_merge` 工具：先驗證，後以明確短 hash 授權實際合併。
+- 使用目的明確的完整 `pr_merge` 工具：先驗證，後以明確短 hash 授權實際合併。
 - 預設行為不得執行 merge；只有 `pr_merge --apply <hash>` 且重驗證全部通過時才可執行 `gh pr merge`。
 - 保留 cwd 自動推導與 `--pr` 明確指定兩種使用方式。
 - 失敗應在能確定失敗時立即退出，不因等待無關的檢查而延遲。
@@ -49,7 +49,7 @@ omp 的 TTSR 適合在模型串流中命中 `gh pr merge` 時注入前置提醒�
 
 ### 3. `commands/pr_merge`
 
-將目前 `commands/pr_check` 重新命名為 `commands/pr_merge`，並把它改成完整工具。保留既有 `gh` / GraphQL 查詢基礎，但調整主流程與介面：
+使用 `commands/pr_merge` 作為完整工具，保留既有 `gh` / GraphQL 查詢基礎，但調整主流程與介面：
 
 ```text
 pr_merge [--pr REF] [--timeout SECONDS] [--interval SECONDS]
@@ -174,7 +174,7 @@ PR #<number>: <url>
 - 直接 `gh pr merge` 會被全域 guard 阻止。
 - create/edit 仍遵循 skill 的 PR 文案品質規範，成功後會收到 reminder。
 
-保留目前未提交的 `SKILL.md` / `reference/review.md` 內容方向；不要恢復已刪除的 `wait.py`。
+維持 `pr_merge` 作為唯一的 PR 等待與合併入口。
 
 ## 驗證
 
