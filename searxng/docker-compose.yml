@@ -1,0 +1,26 @@
+# SearXNG meta-search instance for oh-my-pi web_search.
+#
+# 設計決策：
+# - 僅綁定 127.0.0.1 ── 不對外開放，家用單 client（omp），無需 limiter / Valkey
+# - 移除官方模板的 valkey 服務 ── 只 limiter 開啟時才需要
+# - core-config/ 掛載 /etc/searxng/ ── 設定檔以一般檔案管理
+# - core-data volume 持久化快取
+#
+# 官方模板來源: https://github.com/searxng/searxng/blob/master/container/docker-compose.yml
+
+name: searxng
+
+services:
+  core:
+    container_name: searxng-core
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:-latest}
+    restart: always
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8080}:${SEARXNG_PORT:-8080}"
+    env_file: ./.env
+    volumes:
+      - ./core-config/:/etc/searxng/:Z
+      - core-data:/var/cache/searxng/
+
+volumes:
+  core-data:
