@@ -84,14 +84,15 @@ pr_merge [--pr REF] [--timeout SECONDS] [--interval SECONDS]
 
 找不到 PR、PR 不是 `OPEN`、或 PR 是 draft，立即退出，不進入後續等待。
 
-### 2. Mergeability
+### 2. Mergeability 快速篩選
 
-把 `mergeStateStatus` 與 `mergeable` 都視為合併前置條件：
+第二步只攔截已知的硬阻塞，避免把 CI 尚未完成誤判成 mergeability 失敗：
 
-- 通過狀態：`mergeStateStatus` 為 `CLEAN` 或 `HAS_HOOKS`，且 `mergeable` 為 `MERGEABLE`。
-- `DIRTY`、`BLOCKED`、`UNSTABLE`、`BEHIND`、`UNKNOWN` 或非 `MERGEABLE`：立即報錯。
+- `mergeable == CONFLICTING` 或 `mergeStateStatus == DIRTY`：立即報錯，這是已確認的合併衝突。
+- `mergeStateStatus` 為 `BLOCKED`、`UNSTABLE`、`UNKNOWN` 或 `BEHIND` 時先放行到 CI/kilo 等待；這些狀態可能由尚未完成的檢查或 GitHub 重新計算造成，不能在第二步直接判定為最終失敗。
+- `mergeable == UNKNOWN` 也先放行；第二步只做快速篩選，不等待 mergeability 本身。
 
-這一步的目的不是只檢查文字上的 conflict，而是只在 GitHub 已明確判定可合併時進入 CI 等待。
+這一步仍會先拒絕非 `OPEN` 或 draft PR。CI/kilo/threads 完成後，必須重新讀取 mergeability；只有最終 `mergeStateStatus` 為 `CLEAN` 或 `HAS_HOOKS` 且 `mergeable` 為 `MERGEABLE` 才能輸出可合併提示。
 
 ### 3. CI / kilo
 
@@ -113,9 +114,14 @@ CI/kilo 全部成功後取得 review threads：
 - `--list` 與 `--resolve` 是明確的輔助模式：它們只處理 threads，不跑完整檢查，也不執行 merge。
 - `--apply` 不可與 `--list` 或 `--resolve` 混用。
 
-### 5. 授權 hash
+### 5. 最終 mergeability 與授權 hash
 
-所有檢查通過後，重新讀取 PR 的 `updatedAt`，以原始 timestamp 字串計算：
+CI/kilo 與 review threads 通過後，重新讀取 `mergeStateStatus` 與 `mergeable`：
+
+- 只有 `mergeStateStatus` 為 `CLEAN` 或 `HAS_HOOKS`，且 `mergeable` 為 `MERGEABLE` 才能繼續。
+- 若此時仍為 `DIRTY`、`BLOCKED`、`UNSTABLE`、`BEHIND`、`UNKNOWN` 或非 `MERGEABLE`，立即報錯，不輸出可合併提示。
+
+最終 mergeability 通過後，再重新讀取 PR 的 `updatedAt`，以原始 timestamp 字串計算：
 
 ```python
 hashlib.md5(updated_at.encode(), usedforsecurity=False).hexdigest()[:4]
