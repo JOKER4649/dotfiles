@@ -1,21 +1,43 @@
 providers: 
-  webSearch: auto
-symbolPreset: unicode
+  webSearchOrder: 
+    - searxng
+    - perplexity
+    - gemini
+    - anthropic
+    - codex
+    - xai
+    - zai
+    - exa
+    - tinyfish
+    - jina
+    - kagi
+    - tavily
+    - firecrawl
+    - brave
+    - kimi
+    - parallel
+    - synthetic
+    - startpage
+    - duckduckgo
+    - ecosia
+    - google
+    - mojeek
+    - public
+symbolPreset: nerd
 theme: 
   dark: titanium
 setupVersion: 1
 modelRoles: 
-  default: kilo/neuralwatt/glm-5.2-short
+  default: openai-codex/gpt-5.6-luna:max
   smol: minimax-code/MiniMax-M3
-  slow: openai-codex/gpt-5.6-sol:high
+  slow: openai-codex/gpt-5.6-luna:max
   vision: minimax-code/MiniMax-M3
-  plan: opencode-go/deepseek-v4-pro:high
+  plan: openai-codex/gpt-5.6-luna:max
   advisor: minimax-code/MiniMax-M3
-  commit: opencode-go/deepseek-v4-flash
-  task: openai-codex/gpt-5.6-luna:high
-  tiny: opencode-go/deepseek-v4-flash
-  designer: minimax-code/MiniMax-M3
-  default2: openai-codex/gpt-5.6-terra:high
+  commit: minimax-code/MiniMax-M3:off
+  task: openai-codex/gpt-5.6-luna:max
+  tiny: minimax-code/MiniMax-M3:off
+  designer: opencode-go/glm-5.2:max
 advisor: 
   enabled: false
   syncBacklog: "1"
@@ -27,8 +49,8 @@ defaultThinkingLevel: auto
 cycleOrder: 
   - smol
   - default
-  - default2
   - slow
+  - default2
 colorBlindMode: false
 display: 
   shimmer: classic
@@ -62,8 +84,8 @@ browser:
   headless: true
   enabled: true
 compaction: 
-  strategy: snapcompact
-  thresholdPercent: 60
+  strategy: context-full
+  thresholdPercent: -1
   thresholdTokens: 200000
   handoffSaveToDisk: false
 exa: 
@@ -94,12 +116,13 @@ bashInterceptor:
 shellMinimizer: 
   sourceOutlineLevel: default
 dev: 
-  autoqa: 
-    consent: granted
+  autoqaConsent: granted
 statusLine: 
-  preset: full
+  preset: compact
   sessionAccent: true
   transparent: false
   compactThinkingLevel: false
 terminal: 
   showProgress: false
+searxng: 
+  endpoint: http://127.0.0.1:8889
