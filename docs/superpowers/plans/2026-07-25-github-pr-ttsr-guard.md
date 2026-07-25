@@ -31,11 +31,11 @@
 | `omp/agent/rules/github-pr-master-merge.md` | 全域 TTSR 前置提醒 | 新增規則 |
 | `omp/agent/extensions/github-pr-master-reminder.ts` | agent tool-call guard 與 create/edit reminder | 修改事件與 regex 分工 |
 | `agents/skills/github-pr-master/SKILL.md` | PR skill 主流程 | 將檢查／合併指令改成 `pr_merge` |
-| `agents/skills/github-pr-master/reference/review.md` | review 等待、thread 操作說明 | 改名、補充 hash/apply 流程 |
+| `agents/skills/github-pr-master/reference/review.md` | review 等待、thread 操作說明 | 更新流程並補充 hash/apply 流程 |
 
 ---
 
-### Task 1: Rename and refactor the PR command
+### Task 1: Implement and verify the PR command contract
 
 **Files:**
 - Modify: `commands/pr_merge`
@@ -45,7 +45,7 @@
 - Consumes: existing `_gh_pr_view`, `_gh_graphql`, `_wait`, `_fetch_threads`, `_expand_resolve_ids`, and current `gh pr view --json statusCheckRollup,number,url,headRefName,baseRefName` flow.
 - Produces: executable `commands/pr_merge`; importable pure helpers `confirmation_hash(updated_at: str) -> str`, `fast_mergeability_error(view: Mapping[str, Any]) -> str | None`, `final_mergeability_error(view: Mapping[str, Any]) -> str | None`, and a check result carrying the target view plus confirmation hash.
 
-- [ ] **Step 1: Move the executable without changing behavior**
+- [ ] **Step 1: Review the executable without changing behavior**
 
 Run:
 
@@ -155,7 +155,7 @@ Do not inspect review threads after a known CI/kilo failure; the failure stage m
 
 - [ ] **Step 5: Implement explicit thread modes and full check mode**
 
-Keep `--list` and repeatable `--resolve` as auxiliary modes after the rename:
+Keep `--list` and repeatable `--resolve` as auxiliary modes in the current command:
 
 - `--list`: resolve the target and print unresolved threads only; no CI wait and no merge.
 - `--resolve`: resolve full thread IDs or `#N` indexes; no CI wait and no merge.
@@ -219,11 +219,11 @@ python3 -m unittest commands.tests.test_pr_merge -v
 commands/pr_merge --help
 ```
 
-Expected: all tests pass; help shows `--apply`, `--list`, `--resolve`, timeout/interval, kilo selection, and merge strategy flags. Commit only the moved command and its tests:
+Expected: all tests pass; help shows `--apply`, `--list`, `--resolve`, timeout/interval, kilo selection, and merge strategy flags. Commit only the command and its tests:
 
 ```bash
 git add commands/pr_merge commands/tests/test_pr_merge.py
-git commit -m "feat: 將 pr check 收斂為受確認碼保護的 pr merge"
+git commit -m "feat: 將 pr merge 收斂為受確認碼保護的合併流程"
 ```
 
 ---
@@ -349,10 +349,10 @@ In `SKILL.md`:
 
 In `reference/review.md`:
 
-- Rename the waiting-tool heading and examples to `pr_merge`.
+- Use `pr_merge` as the waiting-tool heading and in all examples.
 - Document default check mode: current cwd/branch, wait for CI/kilo, fail on unresolved threads, final mergeability check, hash output.
 - Document `pr_merge --list` and `pr_merge --resolve <ID>` as thread-only auxiliary modes.
-- Replace the old merge instruction with:
+- Document the merge instruction as:
 
 ```text
 pr_merge
