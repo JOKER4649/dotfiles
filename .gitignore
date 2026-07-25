@@ -33,3 +33,4 @@ opencode/skills/brainstorming
 .env
 
 tmp/
+.worktrees/
