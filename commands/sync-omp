@@ -1,0 +1,105 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = [
+#   "typer>=0.12",
+# ]
+# ///
+"""備份 omp 設定檔到 myconfig 倉庫並自動 commit + push。
+
+omp 的設定檔位於 ~/.omp/agent/，本腳本將其中「值得備份」的檔案
+複製回倉庫的 omp/ 目錄，再交由 git 自動 commit + push。
+
+與 backup.sh 的差異：backup.sh 是整倉庫自動備份（cron 排程），
+本腳本是 omp 專用、由使用者手動觸發（例如 omp 用完後執行）。
+
+用法：
+    sync-omp             執行備份
+    sync-omp --dry-run   預覽模式（顯示將複製的檔案，不實際執行）
+"""
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import typer
+
+app = typer.Typer(help=__doc__)
+
+# 要備份的檔案（相對於 ~/.omp 的來源路徑 → 相對於倉庫根的目標路徑）
+# 只備份純設定檔，runtime 資料（sessions、db、blobs、logs 等）不備份
+FILES: dict[str, str] = {
+    "agent/config.yml": "omp/agent/config.yml",
+    "agent/models.yml": "omp/agent/models.yml",
+}
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+OMP_ROOT = Path.home() / ".omp"
+LOG_FILE = REPO_ROOT / "backup" / "sync-omp.log"
+
+
+def log(msg: str) -> None:
+    """記錄日誌（同時輸出到 stdout 與日誌檔）"""
+    import datetime
+
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line)
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+@app.command()
+def sync(
+    dry_run: bool = typer.Option(False, "--dry-run", help="預覽模式，不實際執行"),
+) -> None:
+    """備份 omp 設定檔到倉庫並 commit + push"""
+    if dry_run:
+        log("=== 預覽模式（--dry-run）===")
+
+    if not OMP_ROOT.is_dir():
+        log(f"錯誤：{OMP_ROOT} 不存在或不是目錄")
+        raise typer.Exit(1)
+
+    changed: list[Path] = []
+    for src_rel, dst_rel in FILES.items():
+        src = OMP_ROOT / src_rel
+        dst = REPO_ROOT / dst_rel
+        if not src.is_file():
+            log(f"  ✗ 來源不存在，略過: {src_rel}")
+            continue
+        if not dst.exists() or not dst.read_bytes() == src.read_bytes():
+            if dry_run:
+                log(f"  → 將複製: {src_rel} → {dst_rel}")
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                log(f"  ✓ 已複製: {src_rel} → {dst_rel}")
+            changed.append(dst)
+        else:
+            log(f"  · 無變更: {src_rel}")
+
+    if not changed:
+        log("無變更，跳過 commit")
+        return
+
+    if dry_run:
+        log("預覽結束（--dry-run 不實際執行）")
+        return
+
+    # commit + push（與 backup.sh 相同流程）
+    git = shutil.which("git") or "/usr/bin/git"
+    subprocess.run([git, "add", *[str(p) for p in changed]], cwd=REPO_ROOT, check=True)
+    msg = f"backup: sync-omp {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    subprocess.run([git, "commit", "-m", msg], cwd=REPO_ROOT, check=True)
+    log(f"已提交: {msg}")
+    try:
+        subprocess.run([git, "push"], cwd=REPO_ROOT, check=True)
+        log("已推送到 remote")
+    except subprocess.CalledProcessError:
+        log("錯誤：推送失敗")
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

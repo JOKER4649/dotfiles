@@ -24,7 +24,7 @@
 | `worktrunk/` | [Worktrunk](https://worktrunk.dev) git worktree 管理工具設定 |
 | `agents/` | [OpenCode Skills](https://opencode.ai/docs/skills) ── 使用者安裝的 agent skills |
 | `curl/` | [curl](https://curl.se) 全局設定（預設啟用 `.netrc` 認證） |
-| `omp/` | [Oh My Pi](https://github.com/) AI agent 設定（`~/.omp` symlink，追蹤 `agent/config.yml` + `agent/models.yml`） |
+| `omp/` | [Oh My Pi](https://github.com/) AI agent 設定備份（非 symlink；`~/.omp` 為本機執行期資料，僅用 `sync-omp` 備份 `agent/config.yml` + `agent/models.yml`） |
 | `searxng/` | [SearXNG](https://searxng.org) meta-search instance docker-compose（僅綁 127.0.0.1，供 omp `web_search` 使用） |
 
 
@@ -48,6 +48,22 @@ mise plugins link cursor-agent ~/myconfig/mise/plugins/cursor-agent
 
 建立以工具名稱命名的新子目錄，將設定檔放入其中。若有需要排除的檔案，在子目錄內建立 `.gitignore`。
 
+
+## Oh My Pi 備份策略
+
+`~/.omp` 是 omp 的執行期目錄，包含大量會持續變動的 runtime 資料
+（sessions、SQLite db、blobs、logs、cache 等），**不適合整個 symlink 進倉庫**。
+因此採用「腳本備份」策略：
+
+- 執行期資料全部留在 `~/.omp`（本機專屬，不進 git）
+- 純設定檔（`agent/config.yml`、`agent/models.yml`）用 `sync-omp` 備份回倉庫 `omp/`
+
+omp 用完後執行：
+
+```bash
+sync-omp              # 複製設定檔並自動 commit + push
+sync-omp --dry-run    # 預覽模式
+```
 
 ## Oh My Pi 自訂模型提供者
 
