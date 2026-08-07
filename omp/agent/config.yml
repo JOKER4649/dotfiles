@@ -1,6 +1,5 @@
 providers: 
   webSearchOrder: 
-    - searxng
     - perplexity
     - gemini
     - anthropic
@@ -23,34 +22,34 @@ providers:
     - google
     - mojeek
     - public
+    - searxng
+  webSearchExclude: 
+    - codex
 symbolPreset: nerd
 theme: 
   dark: titanium
 setupVersion: 1
 modelRoles: 
-  default: openai-codex/gpt-5.6-luna:max
-  smol: minimax-code/MiniMax-M3
-  slow: openai-codex/gpt-5.6-luna:max
-  vision: minimax-code/MiniMax-M3
-  plan: openai-codex/gpt-5.6-luna:max
-  advisor: minimax-code/MiniMax-M3
-  commit: minimax-code/MiniMax-M3:off
-  task: openai-codex/gpt-5.6-luna:max
-  tiny: minimax-code/MiniMax-M3:off
-  designer: opencode-go/glm-5.2:max
+  default: omniroute/codex/gpt-5.6-luna:max
+  vision: omniroute/vision
+  tiny: omniroute/cmd/deepseek/deepseek-v4-flash
+  designer: omniroute/disign
+  smol: omniroute/cmd/deepseek/deepseek-v4-flash
+  slow: omniroute/codex/gpt-5.6-luna-xhigh
+  task: omniroute/cmd/deepseek/deepseek-v4-flash:xhigh
+  advisor: omniroute/cmd/deepseek/deepseek-v4-flash:xhigh
 advisor: 
   enabled: false
   syncBacklog: "1"
   immuneTurns: 5
 hideThinkingBlock: false
 github: 
-  enabled: true
-defaultThinkingLevel: auto
+  enabled: false
+defaultThinkingLevel: max
 cycleOrder: 
   - smol
   - default
   - slow
-  - default2
 colorBlindMode: false
 display: 
   shimmer: classic
@@ -61,8 +60,12 @@ task:
     mode: auto
     commits: generic
     merge: patch
+  enableLsp: true
 commands: 
-  enableOpencodeUser: true
+  enableOpencodeUser: false
+  enableOpencodeProject: false
+  enableClaudeProject: false
+  enableClaudeUser: false
 edit: 
   mode: hashline
 disabledExtensions: 
@@ -87,7 +90,10 @@ compaction:
   strategy: context-full
   thresholdPercent: -1
   thresholdTokens: 200000
-  handoffSaveToDisk: false
+  handoffSaveToDisk: true
+  midTurnEnabled: true
+  enabled: true
+  supersedeReads: true
 exa: 
   enableResearcher: false
 textVerbosity: medium
@@ -100,7 +106,7 @@ contextPromotion:
 branchSummary: 
   enabled: false
 memory: 
-  backend: hindsight
+  backend: mnemopi
 hindsight: 
   bankId: default
 lsp: 
@@ -118,7 +124,7 @@ shellMinimizer:
 dev: 
   autoqaConsent: granted
 statusLine: 
-  preset: compact
+  preset: default
   sessionAccent: true
   transparent: false
   compactThinkingLevel: false
@@ -126,3 +132,34 @@ terminal:
   showProgress: false
 searxng: 
   endpoint: http://127.0.0.1:8889
+plan: 
+  defaultOnStartup: false
+includeModelInPrompt: true
+includeWorkspaceTree: false
+retry: 
+  modelFallback: true
+  usageAwareFallback: false
+  fallbackChains: 
+    smol: 
+      - omniroute/opencode-go/deepseek-v4-flash
+      - omniroute/minimax-m3
+    slow: 
+      - omniroute/ollama-cloud/glm-5.2
+      - omniroute/neuralwatt/glm-5.2
+    tiny: 
+      - omniroute/opencode-go/deepseek-v4-flash
+      - omniroute/minimax/MiniMax-M3
+    advisor: 
+      - omniroute/opencode-go/deepseek-v4-flash
+    default: 
+      - ollama-cloud/glm-5.2
+      - omniroute/neuralwatt/glm-5.2
+    task: 
+      - omniroute/opencode-go/deepseek-v4-flash
+      - omniroute/ollama-cloud/deepseek-v4-flash
+mnemopi: 
+  embeddingVariant: multilingual
+ttsr: 
+  contextMode: discard
+features: 
+  unexpectedStopDetection: true
