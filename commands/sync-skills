@@ -1,0 +1,104 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = [
+#   "typer>=0.12",
+# ]
+# ///
+
+"""備份 npm:skills 的 lock 檔到 myconfig 倉庫並自動 commit + push。
+
+npm:skills 的安裝清單記錄在 ~/.agents/.skill-lock.json（由 skills CLI
+管理，路徑見其原始碼 getSkillLockPath()）。本腳本將該檔案複製回倉庫的
+agents/.skill-lock.json 作為備份，再交由 git 自動 commit + push。
+
+說明：npm:skills 安裝的 skill 本體位於 ~/.agents/skills/，屬於可重建的
+runtime 資料，不進倉庫；換機或還原時只需 restore lock 檔，再執行
+`skills experimental_install` 即可重建所有 skill。
+
+用法：
+    sync-skills             執行備份
+    sync-skills --dry-run   預覽模式（顯示將複製的檔案，不實際執行）
+"""
+
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+import typer
+
+app = typer.Typer(help=__doc__)
+
+# 要備份的檔案（相對於 ~/.agents 的來源路徑 → 相對於倉庫根的目標路徑）
+FILES: dict[str, str] = {
+    ".skill-lock.json": "agents/.skill-lock.json",
+}
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+AGENTS_ROOT = Path.home() / ".agents"
+LOG_FILE = REPO_ROOT / "backup" / "sync-skills.log"
+
+
+def log(msg: str) -> None:
+    """記錄日誌（同時輸出到 stdout 與日誌檔）"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line)
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+@app.command()
+def sync(
+    dry_run: bool = typer.Option(False, "--dry-run", help="預覽模式，不實際執行"),
+) -> None:
+    """備份 skills lock 檔到倉庫並 commit + push"""
+    if dry_run:
+        log("=== 預覽模式（--dry-run）===")
+
+    if not AGENTS_ROOT.is_dir():
+        log(f"錯誤：{AGENTS_ROOT} 不存在或不是目錄")
+        raise typer.Exit(1)
+
+    changed: list[Path] = []
+    for src_rel, dst_rel in FILES.items():
+        src = AGENTS_ROOT / src_rel
+        dst = REPO_ROOT / dst_rel
+        if not src.is_file():
+            log(f"  ✗ 來源不存在，略過: {src_rel}")
+            continue
+        if not dst.exists() or not dst.read_bytes() == src.read_bytes():
+            if dry_run:
+                log(f"  → 將複製: {src_rel} → {dst_rel}")
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                log(f"  ✓ 已複製: {src_rel} → {dst_rel}")
+            changed.append(dst)
+        else:
+            log(f"  · 無變更: {src_rel}")
+
+    if not changed:
+        log("無變更，跳過 commit")
+        return
+
+    if dry_run:
+        log("預覽結束（--dry-run 不實際執行）")
+        return
+
+    # commit + push（與 sync-omp 相同流程）
+    git = shutil.which("git") or "/usr/bin/git"
+    subprocess.run([git, "add", *[str(p) for p in changed]], cwd=REPO_ROOT, check=True)
+    msg = f"backup: sync-skills {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    subprocess.run([git, "commit", "-m", msg], cwd=REPO_ROOT, check=True)
+    log(f"已提交: {msg}")
+    try:
+        subprocess.run([git, "push"], cwd=REPO_ROOT, check=True)
+        log("已推送到 remote")
+    except subprocess.CalledProcessError:
+        log("錯誤：推送失敗")
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

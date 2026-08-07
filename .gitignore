@@ -8,19 +8,6 @@
 opencode/plugins/herdr-*.js
 
 # codeg 安裝的 skill 軟連結（指向 ~/.codeg/skills/，跨機器無效，應由 codeg 管理）
-agents/skills/brainstorming
-agents/skills/dispatching-parallel-agents
-agents/skills/executing-plans
-agents/skills/finishing-a-development-branch
-agents/skills/receiving-code-review
-agents/skills/requesting-code-review
-agents/skills/subagent-driven-development
-agents/skills/systematic-debugging
-agents/skills/test-driven-development
-agents/skills/using-git-worktrees
-agents/skills/verification-before-completion
-agents/skills/writing-plans
-agents/skills/writing-skills
 opencode/skills/brainstorming
 
 # Python 工具自動產生的快取

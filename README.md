@@ -22,7 +22,7 @@
 | `environment.d/` | systemd user 環境變數（`~/.config/environment.d/`） |
 | `fcitx5/` | [Fcitx5](https://fcitx-im.org) 輸入法 XDG autostart 設定 |
 | `worktrunk/` | [Worktrunk](https://worktrunk.dev) git worktree 管理工具設定 |
-| `agents/` | [OpenCode Skills](https://opencode.ai/docs/skills) ── 使用者安裝的 agent skills |
+| `agents/` | [npm:skills](https://www.npmjs.com/package/skills) 的 lock 檔備份（非 symlink；`~/.agents` 為本機執行期資料，僅用 `sync-skills` 備份 `.skill-lock.json`） |
 | `curl/` | [curl](https://curl.se) 全局設定（預設啟用 `.netrc` 認證） |
 | `omp/` | [Oh My Pi](https://github.com/) AI agent 設定備份（非 symlink；`~/.omp` 為本機執行期資料，僅用 `sync-omp` 備份 `agent/config.yml` + `agent/models.yml`） |
 | `searxng/` | [SearXNG](https://searxng.org) meta-search instance docker-compose（僅綁 127.0.0.1，供 omp `web_search` 使用） |
@@ -64,6 +64,25 @@ omp 用完後執行：
 sync-omp              # 複製設定檔並自動 commit + push
 sync-omp --dry-run    # 預覽模式
 ```
+
+## Skills 備份策略
+
+`~/.agents` 是 [npm:skills](https://www.npmjs.com/package/skills) 的執行期目錄，包含
+安裝的 skill 本體（`skills/`）與安裝清單（`.skill-lock.json`），**不適合整個 symlink 進倉庫**。
+因此採用「腳本備份」策略：
+
+- 執行期資料（skill 本體）留在 `~/.agents`（可重建，不進 git）
+- 安裝清單（`.skill-lock.json`）用 `sync-skills` 備份回倉庫 `agents/`
+
+skill 安裝/更新後執行：
+
+```bash
+sync-skills           # 複製 lock 檔並自動 commit + push
+sync-skills --dry-run # 預覽模式
+```
+
+還原流程：將 `agents/.skill-lock.json` 複製回 `~/.agents/`，再執行
+`skills experimental_install` 重建所有 skill。
 
 ## Oh My Pi 自訂模型提供者
 
