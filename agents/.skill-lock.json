@@ -216,14 +216,6 @@
       "skillFolderHash": "48c3a8b0a9705d6310d37f7f9b53bcb2c55955c7",
       "installedAt": "2026-08-02T22:18:30.737Z",
       "updatedAt": "2026-08-05T17:58:29.758Z"
-    },
-    "sync-skills-test": {
-      "source": "test/sync-skills",
-      "sourceType": "github",
-      "sourceUrl": "https://example.com/test.git",
-      "skillPath": "skills/test/SKILL.md",
-      "installedAt": "2026-08-07T00:00:00.000Z",
-      "updatedAt": "2026-08-07T00:00:00.000Z"
     }
   },
   "dismissed": {
