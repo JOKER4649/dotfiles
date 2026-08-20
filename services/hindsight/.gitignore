@@ -1,3 +1,0 @@
-# runtime state — re-initialized on `docker compose up`
-tei_data/
-pg_data/
