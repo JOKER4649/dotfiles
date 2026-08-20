@@ -27,6 +27,8 @@ cloud-sql-proxy = "2.22.1"
 yazi = "latest"
 "npm:@oh-my-pi/pi-coding-agent" = "latest"
 mysql-client = "latest"
+"npm:skills" = "latest"
+herdr = "latest"
 
 [settings]
 npm.package_manager = "bun"

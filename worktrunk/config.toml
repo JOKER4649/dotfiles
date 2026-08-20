@@ -35,6 +35,7 @@ worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
 #   • review 不熟悉的 PR 時若擔心, 改用 `mise trust` (不加 --all) 或移除整段
 
 pre-start = "mise trust --all && mise install"
+skip-commit-generation-prompt = true
 
 
 # ─── post-switch: 切回預設 branch 時自動 pull ───────────────────────────────
@@ -108,6 +109,8 @@ exclude = [
   ".turbo/",
   "node_modules/",
 ]
+
+[projects]
 
 
 # ┌──────────────────────────────────────────────────────────────────────────┐
