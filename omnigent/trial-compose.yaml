@@ -1,0 +1,27 @@
+services:
+  omnigent:
+    environment:
+      # 僅透過 IAP/SSH tunnel 存取；不公開服務埠。
+      OMNIGENT_AUTH_ENABLED: "0"
+      OMNIGENT_PUBLIC_SHARING: "off"
+      OMNIGENT_SHARING_MODE: "off"
+
+  runner:
+    image: ghcr.io/omnigent-ai/omnigent-host:${OMNIGENT_IMAGE_TAG:-v0.10.0}
+    restart: unless-stopped
+    network_mode: host
+    command: ["omni", "host", "http://127.0.0.1:6767"]
+    environment:
+      OPENCODE_API_KEY: "${OPENCODE_API_KEY:-public}"
+    working_dir: /workspace
+    volumes:
+      - runner-home:/root
+      - runner-work:/workspace
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+
+volumes:
+  runner-home:
+  runner-work:
