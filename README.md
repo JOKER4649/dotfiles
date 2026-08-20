@@ -27,6 +27,7 @@
 | `curl/` | [curl](https://curl.se) 全局設定（預設啟用 `.netrc` 認證） |
 | `omp/` | [Oh My Pi](https://github.com/) AI agent 設定備份（非 symlink；`~/.omp` 為本機執行期資料，僅用 `sync-omp` 備份 `agent/config.yml` + `agent/models.yml`） |
 | `searxng/` | [SearXNG](https://searxng.org) meta-search instance docker-compose（僅綁 127.0.0.1，供 omp `web_search` 使用） |
+| `omnigent/` | OmniGent 隔離 GCP 試用部署腳本與執行期設定（非 symlink） |
 
 
 ## mise 自訂插件

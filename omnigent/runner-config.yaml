@@ -1,0 +1,10 @@
+providers:
+  opencode-zen:
+    kind: key
+    default: [pi]
+    openai:
+      base_url: https://opencode.ai/zen/v1
+      api_key_ref: env:OPENCODE_API_KEY
+      wire_api: chat
+      models:
+        default: nemotron-3.5-lightning-free

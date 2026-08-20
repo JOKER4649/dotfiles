@@ -1,0 +1,18 @@
+name: pi-free-trial
+description: OmniGent 使用 OpenCode Zen 免费模型的 Pi 试用会话。
+
+executor:
+  harness: pi
+  model: nemotron-3.5-lightning-free
+
+os_env:
+  type: caller_process
+  cwd: /workspace
+  sandbox:
+    type: none
+    env_passthrough:
+      - OPENCODE_API_KEY
+
+prompt: |
+  你正在一个一次性的试用 workspace 中运行。请创建 trial-ok.txt，内容只写 OK，
+  然后回报你创建的文件路径和内容。不要访问 workspace 以外的路径。

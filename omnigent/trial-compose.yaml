@@ -1,7 +1,7 @@
 services:
   omnigent:
     environment:
-      # 僅透過 IAP/SSH tunnel 存取；不公開服務埠。
+      # 仅通过 IAP/SSH tunnel 访问；不公开服务端口。
       OMNIGENT_AUTH_ENABLED: "0"
       OMNIGENT_PUBLIC_SHARING: "off"
       OMNIGENT_SHARING_MODE: "off"
@@ -10,13 +10,15 @@ services:
     image: ghcr.io/omnigent-ai/omnigent-host:${OMNIGENT_IMAGE_TAG:-v0.10.0}
     restart: unless-stopped
     network_mode: host
-    command: ["omni", "host", "http://127.0.0.1:6767"]
+    command: ["sh", "-c", "install -d -m 0700 /root/.omnigent && install -m 0600 /runner-config.yaml /root/.omnigent/config.yaml && exec omni host http://127.0.0.1:6767"]
     environment:
       OPENCODE_API_KEY: "${OPENCODE_API_KEY:-public}"
+      OMNIGENT_RUNNER_ENV_PASSTHROUGH: "OPENCODE_API_KEY"
     working_dir: /workspace
     volumes:
       - runner-home:/root
       - runner-work:/workspace
+      - ./runner-config.yaml:/runner-config.yaml:ro
     cap_add:
       - SYS_ADMIN
     security_opt:

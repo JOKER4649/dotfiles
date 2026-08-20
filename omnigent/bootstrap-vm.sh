@@ -25,12 +25,12 @@ if [ ! -s /opt/omnigent-trial/secrets/postgres-password ]; then
   openssl rand -hex 32 > /opt/omnigent-trial/secrets/postgres-password
 fi
 
-# 試用 VM 自動停止，避免忘記關閉造成持續費用。
+# 试用 VM 自动停止，避免忘记关闭造成持续费用。
 systemctl stop omnigent-trial-auto-stop.timer 2>/dev/null || true
 systemctl disable omnigent-trial-auto-stop.timer 2>/dev/null || true
 cat >/etc/systemd/system/omnigent-trial-auto-stop.service <<'UNIT'
 [Unit]
-Description=Stop the temporary OmniGent trial VM
+Description=停止临时 OmniGent 试用 VM
 
 [Service]
 Type=oneshot
@@ -38,7 +38,7 @@ ExecStart=/usr/bin/systemctl poweroff
 UNIT
 cat >/etc/systemd/system/omnigent-trial-auto-stop.timer <<'UNIT'
 [Unit]
-Description=Auto-stop the temporary OmniGent trial VM after six hours
+Description=六小时后自动停止临时 OmniGent 试用 VM
 
 [Timer]
 OnBootSec=6h
@@ -50,4 +50,4 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now omnigent-trial-auto-stop.timer
 
-echo "OmniGent VM bootstrap complete"
+echo "OmniGent VM Bootstrap 完成"
