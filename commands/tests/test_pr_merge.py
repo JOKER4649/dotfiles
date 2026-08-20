@@ -718,7 +718,7 @@ class CommandFlowTests(unittest.TestCase):
             graphql_payloads=[{}],
             real_fetch_threads=True,
         )
-        code, _, stderr = runner(argv=["--pr", "431", "--apply", "b08e"])
+        code, _, stderr = runner(argv=["--pr", "431", "--apply", "b08e", "--user-agreed"])
 
         self.assertEqual(code, 3)
         self.assertIn("gh api graphql", stderr)
@@ -752,7 +752,7 @@ class CommandFlowTests(unittest.TestCase):
             ],
             threads_payloads=[[]],
         )
-        code, _, _ = runner(argv=["--apply", "dead"])
+        code, _, _ = runner(argv=["--apply", "dead", "--user-agreed"])
         self.assertEqual(code, 1)
         self.assertEqual(runner.gh_merge_calls, [])
 
@@ -766,7 +766,7 @@ class CommandFlowTests(unittest.TestCase):
             ],
             threads_payloads=[[]],
         )
-        code, _, _ = runner(argv=["--apply", " b08e "])
+        code, _, _ = runner(argv=["--apply", " b08e ", "--user-agreed"])
         self.assertEqual(code, 1)
         self.assertEqual(runner.gh_merge_calls, [])
 
@@ -825,12 +825,12 @@ class CommandFlowTests(unittest.TestCase):
             ],
             threads_payloads=[[]],
         )
-        code, _, _ = runner(argv=["--apply", "b08e"])
+        code, _, _ = runner(argv=["--apply", "b08e", "--user-agreed"])
         self.assertEqual(code, 0)
         self.assertEqual(len(runner.gh_merge_calls), 1)
         merge_cmd = runner.gh_merge_calls[0]
-        # 預設有 --merge (策略之一, 雖然這裡 apply 不帶策略時應該 default 不帶)
-        # 規格只要求: 不帶 --admin/--auto, 帶目標
+        # 預設策略固定為 --squash; 規格只要求: 不帶 --admin/--auto, 帶目標
+        self.assertIn("--squash", merge_cmd)
         self.assertNotIn("--admin", merge_cmd)
         self.assertNotIn("--auto", merge_cmd)
         self.assertIn("https://github.com/o/r/pull/7", merge_cmd)
@@ -852,7 +852,7 @@ class CommandFlowTests(unittest.TestCase):
             threads_payloads=[[]],
             gh_merge_error=merge_error,
         )
-        code, stdout, stderr = runner(argv=["--apply", "b08e"])
+        code, stdout, stderr = runner(argv=["--apply", "b08e", "--user-agreed"])
 
         self.assertEqual(code, 7)
         self.assertIn("stderr diagnostic", stderr)
@@ -871,15 +871,15 @@ class CommandFlowTests(unittest.TestCase):
             threads_payloads=[[]],
             gh_merge_error=FileNotFoundError(2, "gh not found"),
         )
-        code, stdout, stderr = runner(argv=["--apply", "b08e"])
+        code, stdout, stderr = runner(argv=["--apply", "b08e", "--user-agreed"])
 
         self.assertEqual(code, 3)
         self.assertNotIn("✓ 已送出 merge", stdout)
         self.assertIn("gh pr merge 失敗", stderr)
         self.assertNotIn("Traceback", stderr)
 
-    def test_apply_with_squash_strategy_passes_flag(self) -> None:
-        # --squash 應該傳給 gh pr merge。
+    def test_apply_always_uses_squash_strategy(self) -> None:
+        # 不再提供 --merge/--squash/--rebase 旗標: 預設一律 squash。
         runner = _FlowRunner(
             pr_view_payloads=[
                 _resolved_view(),
@@ -889,46 +889,30 @@ class CommandFlowTests(unittest.TestCase):
             ],
             threads_payloads=[[]],
         )
-        code, _, _ = runner(argv=["--apply", "b08e", "--squash"])
+        code, _, _ = runner(argv=["--apply", "b08e", "--delete-branch", "--user-agreed"])
         self.assertEqual(code, 0)
         self.assertEqual(len(runner.gh_merge_calls), 1)
         merge_cmd = runner.gh_merge_calls[0]
         self.assertIn("--squash", merge_cmd)
+        self.assertIn("--delete-branch", merge_cmd)
         self.assertNotIn("--merge", merge_cmd)
         self.assertNotIn("--rebase", merge_cmd)
 
-    def test_apply_with_rebase_and_delete_branch(self) -> None:
-        runner = _FlowRunner(
-            pr_view_payloads=[
-                _resolved_view(),
-                _fast_view(),
-                _ci_view(),
-                _final_view(updated_at="2026-07-25T00:00:00Z"),
-            ],
-            threads_payloads=[[]],
-        )
-        code, _, _ = runner(
-            argv=["--apply", "b08e", "--rebase", "--delete-branch"]
-        )
-        self.assertEqual(code, 0)
-        merge_cmd = runner.gh_merge_calls[0]
-        self.assertIn("--rebase", merge_cmd)
-        self.assertIn("--delete-branch", merge_cmd)
-
-    def test_apply_with_conflicting_strategy_flags_exits_error(self) -> None:
-        runner = _FlowRunner(
-            pr_view_payloads=[
-                _resolved_view(),
-                _fast_view(),
-                _ci_view(),
-                _final_view(updated_at="2026-07-25T00:00:00Z"),
-            ],
-            threads_payloads=[[]],
-        )
-        # --merge 與 --squash 同時: 應在解析階段拒絕 (exit != 0, 不呼叫 gh pr merge)
-        code, _, _ = runner(argv=["--apply", "b08e", "--merge", "--squash"])
-        self.assertNotEqual(code, 0)
-        self.assertEqual(runner.gh_merge_calls, [])
+    def test_apply_rejects_removed_strategy_flags(self) -> None:
+        # --merge / --rebase 已移除: typer 解析階段就應拒絕。
+        for removed in ("--merge", "--rebase"):
+            runner = _FlowRunner(
+                pr_view_payloads=[
+                    _resolved_view(),
+                    _fast_view(),
+                    _ci_view(),
+                    _final_view(updated_at="2026-07-25T00:00:00Z"),
+                ],
+                threads_payloads=[[]],
+            )
+            code, _, _ = runner(argv=["--apply", "b08e", removed])
+            self.assertNotEqual(code, 0)
+            self.assertEqual(runner.gh_merge_calls, [])
 
 
 

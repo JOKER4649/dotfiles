@@ -6,7 +6,8 @@
 """GitHub PR 的檢查與受保護合併命令。
 
 預設只執行完整檢查並輸出四碼 confirmation hash；只有
-`--apply <hash>` 在重新檢查並驗證 hash 通過後才執行 merge。
+`--apply <hash>` 在重新檢查並驗證 hash 通過後才執行 merge
+(預設使用 `--squash` 策略)。
 `--list` / `--resolve` 僅處理 review threads，不等待也不合併。
 """
 
@@ -610,53 +611,14 @@ _FINAL_VIEW_FIELDS = (
     "number,url,state,isDraft,headRefName,baseRefName,"
     "mergeStateStatus,mergeable,updatedAt"
 )
-def _select_strategy(
-    merge: bool, squash: bool, rebase: bool
-) -> str | None:
-    """根據策略旗標決定要附加的 gh 旗標; 互斥由 caller 驗證。"""
-    if merge:
-        return "--merge"
-    if squash:
-        return "--squash"
-    if rebase:
-        return "--rebase"
-    return None
-
-
-def _validate_strategy_flags(
-    merge: bool, squash: bool, rebase: bool
-) -> str | None:
-    """驗證策略旗標最多一個被選; 回傳錯誤訊息或 None。"""
-    selected = [name for name, on in (
-        ("--merge", merge),
-        ("--squash", squash),
-        ("--rebase", rebase),
-    ) if on]
-    if len(selected) > 1:
-        return (
-            "策略旗標互斥, 只能選擇一個: "
-            + ", ".join(selected)
-        )
-    return None
-
-
 def _format_apply_command(
     *,
     target: str,
     apply_hash: str,
-    merge: bool,
-    squash: bool,
-    rebase: bool,
     delete_branch: bool,
 ) -> str:
-    """組成可直接交給 CLI 的「pr_merge --apply <hash> --pr <target>」範例。"""
-    parts = ["pr_merge", "--apply", apply_hash]
-    if merge:
-        parts.append("--merge")
-    if squash:
-        parts.append("--squash")
-    if rebase:
-        parts.append("--rebase")
+    """組成可直接交給 CLI 的「pr_merge --apply <hash> --user-agreed --pr <target>」範例。"""
+    parts = ["pr_merge", "--apply", apply_hash, "--user-agreed"]
     if delete_branch:
         parts.append("--delete-branch")
     parts.extend(["--pr", target])
@@ -755,12 +717,23 @@ def main(
         str | None,
         typer.Option(
             "--apply",
-            help="重驗證後依四碼確認碼執行 merge",
+            help="重驗證後依四碼確認碼執行 merge (必須同時帶 --user-agreed)",
         ),
     ] = None,
-    merge: Annotated[bool, typer.Option("--merge")] = False,
-    squash: Annotated[bool, typer.Option("--squash")] = False,
-    rebase: Annotated[bool, typer.Option("--rebase")] = False,
+    check_only: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="語意旗標: 預設行為即為完整檢查, 加此旗標只為讓意圖明確 (無功能)",
+        ),
+    ] = False,
+    user_agreed: Annotated[
+        bool,
+        typer.Option(
+            "--user-agreed",
+            help="語意旗標: 確認使用者已授權 --apply 執行 merge (必須與 --apply 同時使用, 無功能)",
+        ),
+    ] = False,
     delete_branch: Annotated[
         bool,
         typer.Option(
@@ -778,7 +751,8 @@ def main(
       0  檢查通過 (apply 模式時含 merge 成功)
       1  CI / kilo / threads / mergeability 任一項失敗, 或 --apply hash 不符
       2  超時
-      3  gh CLI 錯誤 (例如當前分支沒有 PR, 或 gh 未安裝)
+      3  gh CLI 錯誤 (例如當前分支沒有 PR, 或 gh 未安裝),
+         或 --apply 未帶 --user-agreed
     """
     # 取得 PR 基本資訊 (resolve / list / 預設流程都需要)
     view = _gh_pr_view(pr, "number,url")
@@ -795,10 +769,17 @@ def main(
         )
         raise typer.Exit(3)
 
-    # 策略旗標互斥。
-    err = _validate_strategy_flags(merge, squash, rebase)
-    if err is not None:
-        typer.secho(err, fg="red", err=True)
+    # --apply 必須同時帶 --user-agreed 才能通過。
+    if apply_hash is not None and not user_agreed:
+        typer.secho(
+            "✗ --apply 必須同時指定 --user-agreed (語意旗標, 確認使用者已授權 merge)",
+            fg="red",
+            err=True,
+        )
+        typer.echo(
+            f"請改用: pr_merge --apply <hash> --user-agreed --pr {target}",
+            err=True,
+        )
         raise typer.Exit(3)
 
     # --resolve 模式: 解決指定 threads 後離開, 不等待。
@@ -851,9 +832,6 @@ def main(
     apply_cmd = _format_apply_command(
         target=target,
         apply_hash=current_hash,
-        merge=merge,
-        squash=squash,
-        rebase=rebase,
         delete_branch=delete_branch,
     )
     typer.echo(f"執行: {apply_cmd}")
@@ -881,11 +859,8 @@ def main(
         typer.echo(f"請改用: {apply_cmd}")
         raise typer.Exit(1)
 
-    # 組合 gh pr merge 指令: 目標 + 唯一一個策略 + (可選) --delete-branch。
-    strategy_flag = _select_strategy(merge, squash, rebase)
-    merge_cmd = ["gh", "pr", "merge", target]
-    if strategy_flag is not None:
-        merge_cmd.append(strategy_flag)
+    # 組合 gh pr merge 指令: 目標 + 預設 --squash + (可選) --delete-branch。
+    merge_cmd = ["gh", "pr", "merge", target, "--squash"]
     if delete_branch:
         merge_cmd.append("--delete-branch")
     try:
