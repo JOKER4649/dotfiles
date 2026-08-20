@@ -8,3 +8,9 @@ providers:
     discovery:
       type: litellm
 
+  opencode-go:
+    baseUrl: https://opencode.ai/zen/go/v1
+    auth: none
+    models:
+      - id: muse-spark-1.2-contributor
+        api: openai-responses
