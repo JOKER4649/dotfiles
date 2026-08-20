@@ -10,6 +10,7 @@
 | `opencode/` | [OpenCode](https://opencode.ai) AI 編碼助手設定（共用 base，`~/.config/opencode` symlink） |
 | `opencode-local/` | OpenCode 個人 overlay（`agents/` 等），僅互動式使用時透過 `OPENCODE_CONFIG_DIR` 疊加；非 symlink，避免污染 multica 等直接叫用 opencode 的工具 |
 | `zsh/` | Zsh shell 設定（基於 [Oh My Zsh](https://ohmyz.sh)） |
+| `ssh/` | OpenSSH 用戶端設定（`~/.ssh/config` symlink，統一使用 `xterm-256color`） |
 | `mise/` | [mise](https://mise.jdx.dev) 開發工具版本管理器設定 |
 | `starship/` | [Starship](https://starship.rs) 跨 shell 提示字元設定 |
 | `tmux/` | [tmux](https://github.com/tmux/tmux) 終端多工器設定 |
@@ -108,10 +109,8 @@ curl -s https://api.neuralwatt.com/v1/models | jq '.data[] | {id, ctx: .metadata
 ```
 ## SSH TERM 策略
 
-Kitty 會把本機 `TERM` 設成 `xterm-kitty`，但許多遠端主機沒有對應 terminfo。`zsh/.zshrc` 內的 `ssh()` / `gcloud compute ssh` wrapper 採用以下策略：
+`ssh/config` 會透過 `link.py` 連結到 `~/.ssh/config`，使用 OpenSSH 的 `SetEnv TERM=xterm-256color`，避免每台遠端主機額外安裝 Kitty terminfo。
 
-- 預設 `auto`：只有本機 `TERM=xterm-kitty` 時，SSH 連線自動改用遠端普遍支援的 `xterm-256color`
-- 需要原生 Kitty terminfo 時：`MYCONFIG_SSH_TERM=native ssh host`
-- `gcloud compute ssh host` 也套用同一策略，因為 gcloud 會繼承 wrapper 設定後再呼叫 OpenSSH
-- 需要 Kitty shell integration / keyboard protocol 時：`kssh host`
-- 想永久固定相容模式時：`export MYCONFIG_SSH_TERM=xterm-256color`
+- Ubuntu 22.04/24.04 的 `ncurses-base` 已提供 `xterm-256color`
+- `ssh` 與 `gcloud compute ssh` 都使用同一份 OpenSSH config
+- 需要 Kitty shell integration / keyboard protocol 時，使用 `kssh host`

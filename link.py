@@ -29,6 +29,7 @@ class LinkEntry(NamedTuple):
 
 LINKS: list[LinkEntry] = [
     LinkEntry("zsh/.zshrc", "~/.zshrc"),
+    LinkEntry("ssh/config", "~/.ssh/config"),
     LinkEntry("opencode", "~/.config/opencode"),
     LinkEntry("mise", "~/.config/mise"),
     LinkEntry("starship/starship.toml", "~/.config/starship.toml"),

@@ -1,0 +1,3 @@
+# 远程终端兼容性：使用 Ubuntu 默认提供的 xterm-256color。
+Host *
+    SetEnv TERM=xterm-256color
