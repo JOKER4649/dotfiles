@@ -15,6 +15,8 @@ required_files=(
   trial-compose.yaml
   runner-config.yaml
   pi-trial.yaml
+  pi-models.json
+  pi-with-safety.sh
 )
 for file in "${required_files[@]}"; do
   test -f "$SCRIPT_DIR/$file"
@@ -68,6 +70,8 @@ gcloud compute scp \
   "$SCRIPT_DIR/trial-compose.yaml" \
   "$SCRIPT_DIR/runner-config.yaml" \
   "$SCRIPT_DIR/pi-trial.yaml" \
+  "$SCRIPT_DIR/pi-models.json" \
+  "$SCRIPT_DIR/pi-with-safety.sh" \
   "$INSTANCE:/tmp/" \
   --project="$PROJECT" --zone="$ZONE"
 

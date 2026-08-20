@@ -10,7 +10,7 @@ services:
     image: ghcr.io/omnigent-ai/omnigent-host:${OMNIGENT_IMAGE_TAG:-v0.10.0}
     restart: unless-stopped
     network_mode: host
-    command: ["sh", "-c", "install -d -m 0700 /root/.omnigent && install -m 0600 /runner-config.yaml /root/.omnigent/config.yaml && exec omni host http://127.0.0.1:6767"]
+    command: ["sh", "-c", "install -d -m 0700 /root/.omnigent /root/.pi/agent /usr/local/lib/omnigent-bin && ln -sf /usr/local/bin/pi-with-safety /usr/local/lib/omnigent-bin/pi && install -m 0600 /runner-config.yaml /root/.omnigent/config.yaml && install -m 0600 /pi-models.json /root/.pi/agent/models.json && exec env PATH=/usr/local/lib/omnigent-bin:$$PATH omni host http://127.0.0.1:6767"]
     environment:
       OPENCODE_API_KEY: "${OPENCODE_API_KEY:-public}"
       OMNIGENT_RUNNER_ENV_PASSTHROUGH: "OPENCODE_API_KEY"
@@ -19,6 +19,8 @@ services:
       - runner-home:/root
       - runner-work:/workspace
       - ./runner-config.yaml:/runner-config.yaml:ro
+      - ./pi-with-safety.sh:/usr/local/bin/pi-with-safety:ro
+      - ./pi-models.json:/pi-models.json:ro
     cap_add:
       - SYS_ADMIN
     security_opt:

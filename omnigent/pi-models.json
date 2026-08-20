@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "opencode": {
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "apiKey": "$OPENCODE_API_KEY",
+      "api": "openai-responses",
+      "models": [
+        {
+          "id": "muse-spark-1.2-contributor-free",
+          "name": "Muse Spark 1.2 Contributor Free",
+          "input": ["text", "image"],
+          "samplingParams": {
+            "safety_identifier": "omnigent-trial"
+          }
+        }
+      ]
+    }
+  }
+}

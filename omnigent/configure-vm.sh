@@ -10,6 +10,8 @@ curl -fsSL "$BASE_URL" -o "$ROOT/docker-compose.yaml"
 install -m 0644 /tmp/trial-compose.yaml "$ROOT/trial-compose.yaml"
 install -m 0644 /tmp/runner-config.yaml "$ROOT/runner-config.yaml"
 install -m 0644 /tmp/pi-trial.yaml "$ROOT/pi-trial.yaml"
+install -m 0644 /tmp/pi-models.json "$ROOT/pi-models.json"
+install -m 0755 /tmp/pi-with-safety.sh "$ROOT/pi-with-safety.sh"
 
 umask 077
 postgres_password=$(cat "$ROOT/secrets/postgres-password")
@@ -23,7 +25,7 @@ EOF
 cd "$ROOT"
 docker compose -f docker-compose.yaml -f trial-compose.yaml config >/dev/null
 docker compose -f docker-compose.yaml -f trial-compose.yaml pull
-docker compose -f docker-compose.yaml -f trial-compose.yaml up -d
+docker compose -f docker-compose.yaml -f trial-compose.yaml up -d --force-recreate
 runner_container=$(docker compose -f docker-compose.yaml -f trial-compose.yaml ps -q runner)
 if [ -z "$runner_container" ]; then
   docker compose -f docker-compose.yaml -f trial-compose.yaml ps

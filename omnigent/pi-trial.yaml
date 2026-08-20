@@ -3,7 +3,7 @@ description: OmniGent 使用 OpenCode Zen 免费模型的 Pi 试用会话。
 
 executor:
   harness: pi
-  model: nemotron-3.5-lightning-free
+  model: muse-spark-1.2-contributor-free
 
 os_env:
   type: caller_process
