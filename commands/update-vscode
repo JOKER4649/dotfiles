@@ -2,7 +2,7 @@
 # /// script
 # dependencies = ["typer", "httpx"]
 # ///
-"""VS Code 一鍵更新工具（Ubuntu/Debian deb 安裝方式）"""
+"""VS Code 一鍵更新工具（Fedora/RHEL dnf 安裝方式）"""
 
 import subprocess
 import sys
@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import typer
 
-DOWNLOAD_URL = "https://update.code.visualstudio.com/latest/linux-deb-x64/stable"
+DOWNLOAD_URL = "https://update.code.visualstudio.com/latest/linux-rpm-x64/stable"
 
 app = typer.Typer(help="VS Code 一鍵更新工具")
 
@@ -34,9 +34,9 @@ def get_latest_version() -> tuple[str, str]:
     """透過 redirect 取得最新版本號與下載 URL"""
     resp = httpx.head(DOWNLOAD_URL, follow_redirects=True)
     url = str(resp.url)
-    # URL 格式: .../code_{version}-{build}_amd64.deb
+    # URL 格式: .../code-{version}-{build}.el8.x86_64.rpm
     filename = url.rsplit("/", 1)[-1]
-    version = filename.split("_")[1].split("-")[0]
+    version = filename.split("-")[1]
     return version, url
 
 
@@ -65,14 +65,14 @@ def update(
     print(f"\n下載中: {current or '無'} → {latest}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        deb_path = Path(tmpdir) / "code_latest.deb"
+        rpm_path = Path(tmpdir) / "code_latest.rpm"
 
-        # 下載 .deb
+        # 下載 .rpm
         with httpx.stream("GET", url, follow_redirects=True) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
-            with open(deb_path, "wb") as f:
+            with open(rpm_path, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=8192):
                     f.write(chunk)
                     downloaded += len(chunk)
@@ -83,7 +83,7 @@ def update(
 
         # 安裝
         print("安裝中（需要 sudo 權限）...")
-        run(["sudo", "dpkg", "-i", str(deb_path)])
+        run(["sudo", "dnf", "-y", "install", str(rpm_path)])
 
     # 驗證
     new_version = get_current_version()
