@@ -82,51 +82,51 @@ class PureHelperTests(unittest.TestCase):
         }
         self.assertIsNotNone(pr_merge.final_mergeability_error(view))
 
-    def test_kilo_status_aggregates_pending_after_success(self) -> None:
+    def test_summarise_checks_aggregates_pending_after_success(self) -> None:
         checks = [
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review",
+                "name": "unit",
                 "status": "COMPLETED",
                 "conclusion": "SUCCESS",
             },
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review (rerun)",
+                "name": "lint",
                 "status": "IN_PROGRESS",
                 "conclusion": None,
             },
         ]
 
-        exists, done, failed, label = pr_merge._kilo_status(checks)
+        summary, done, all_success, failed = pr_merge._summarise_checks(checks)
 
-        self.assertTrue(exists)
         self.assertFalse(done)
+        self.assertFalse(all_success)
         self.assertFalse(failed)
-        self.assertIn("1/2", label)
+        self.assertIn("1/2", summary)
 
-    def test_kilo_status_reports_failure_after_success(self) -> None:
+    def test_summarise_checks_reports_failure_after_success(self) -> None:
         checks = [
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review",
+                "name": "unit",
                 "status": "COMPLETED",
                 "conclusion": "SUCCESS",
             },
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review (rerun)",
+                "name": "lint",
                 "status": "COMPLETED",
                 "conclusion": "FAILURE",
             },
         ]
 
-        exists, done, failed, label = pr_merge._kilo_status(checks)
+        summary, done, all_success, failed = pr_merge._summarise_checks(checks)
 
-        self.assertTrue(exists)
         self.assertTrue(done)
+        self.assertFalse(all_success)
         self.assertTrue(failed)
-        self.assertIn("FAILURE", label)
+        self.assertIn("fail", summary)
 
 
     def test_print_threads_quotes_index_hint_for_shell(self) -> None:
@@ -472,8 +472,6 @@ def _resolved_view() -> dict[str, Any]:
 def _ci_view(
     *,
     ci_conclusion: str = "SUCCESS",
-    include_kilo: bool = True,
-    kilo_conclusion: str = "SUCCESS",
 ) -> dict[str, Any]:
     rollup: list[dict[str, Any]] = [
         {
@@ -483,15 +481,6 @@ def _ci_view(
             "conclusion": ci_conclusion,
         }
     ]
-    if include_kilo:
-        rollup.append(
-            {
-                "__typename": "CheckRun",
-                "name": "Kilo Code Review",
-                "status": "COMPLETED",
-                "conclusion": kilo_conclusion,
-            }
-        )
     return {
         **_resolved_view(),
         "headRefName": "feat",
@@ -551,7 +540,7 @@ def _unresolved_thread() -> dict[str, Any]:
         "path": "src/x.py",
         "line": 10,
         "comments": {
-            "nodes": [{"author": {"login": "kilo"}, "body": "fix"}]
+            "nodes": [{"author": {"login": "reviewer"}, "body": "fix"}]
         },
     }
 
@@ -606,7 +595,7 @@ class CommandFlowTests(unittest.TestCase):
         self.assertNotIn("未解決 review threads", stdout)
         self.assertEqual(len(runner.pr_view_calls), 2)
 
-    def test_multiple_kilo_pending_after_success_does_not_ready(self) -> None:
+    def test_pending_check_does_not_ready(self) -> None:
         rollup = [
             {
                 "__typename": "CheckRun",
@@ -616,13 +605,7 @@ class CommandFlowTests(unittest.TestCase):
             },
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review",
-                "status": "COMPLETED",
-                "conclusion": "SUCCESS",
-            },
-            {
-                "__typename": "CheckRun",
-                "name": "Kilo Code Review (rerun)",
+                "name": "lint",
                 "status": "IN_PROGRESS",
                 "conclusion": None,
             },
@@ -637,11 +620,11 @@ class CommandFlowTests(unittest.TestCase):
         code, stdout, _ = runner(argv=["--timeout", "0"])
 
         self.assertEqual(code, 2)
-        self.assertIn("kilo:", stdout)
+        self.assertIn("CI:", stdout)
         self.assertNotIn("未解決 review threads", stdout)
         self.assertEqual(len(runner.pr_view_calls), 2)
 
-    def test_multiple_kilo_failure_after_success_exits_immediately(self) -> None:
+    def test_failed_check_exits_immediately(self) -> None:
         rollup = [
             {
                 "__typename": "CheckRun",
@@ -651,13 +634,7 @@ class CommandFlowTests(unittest.TestCase):
             },
             {
                 "__typename": "CheckRun",
-                "name": "Kilo Code Review",
-                "status": "COMPLETED",
-                "conclusion": "SUCCESS",
-            },
-            {
-                "__typename": "CheckRun",
-                "name": "Kilo Code Review (rerun)",
+                "name": "lint",
                 "status": "COMPLETED",
                 "conclusion": "FAILURE",
             },
@@ -672,25 +649,10 @@ class CommandFlowTests(unittest.TestCase):
         code, stdout, stderr = runner(argv=[])
 
         self.assertEqual(code, 1)
-        self.assertIn("kilo:", stdout)
-        self.assertIn("Kilo", stderr)
+        self.assertIn("CI:", stdout)
+        self.assertIn("CI:", stderr)
         self.assertNotIn("未解決 review threads", stdout)
         self.assertEqual(len(runner.pr_view_calls), 2)
-
-    def test_unresolved_thread_blocks_merge(self) -> None:
-        # CI/kilo 綠, threads 未解 → exit 1, 不呼叫 gh pr merge。
-        runner = _FlowRunner(
-            pr_view_payloads=[
-                _resolved_view(),
-                _fast_view(),
-                _ci_view(),
-                _final_view(),
-            ],
-            threads_payloads=[[_unresolved_thread()]],
-        )
-        code, _, _ = runner(argv=[])
-        self.assertEqual(code, 1)
-        self.assertEqual(runner.gh_merge_calls, [])
 
     def test_thread_hint_includes_explicit_pr_in_default_flow(self) -> None:
         runner = _FlowRunner(
@@ -949,7 +911,6 @@ class WaitTests(unittest.TestCase):
                     "431",
                     timeout=1,
                     interval=30,
-                    kilo=False,
                     initial_view=pending,
                 )
 

@@ -23,11 +23,6 @@ from urllib.parse import urlparse
 
 import typer
 
-# kilo 的 CheckRun name 識別: 不分大小寫的子串比對。
-# 實測 name 為 "Kilo Code Review"; kilo 的 CheckRun creator 為 null,
-# 無法用 author login 識別, 只能用 name。
-KILO_CHECK_NAME_HINT = "kilo"
-
 # 視為 "失敗" 的 CheckRun conclusion; 其餘 (NEUTRAL/SKIPPED/STALE/SUCCESS) 視為通過。
 FAILURE_CONCLUSIONS = {
     "FAILURE",
@@ -36,9 +31,6 @@ FAILURE_CONCLUSIONS = {
     "CANCELLED",
     "ACTION_REQUIRED",
 }
-
-# kilo 未出現時, 多久後提示用戶可能未安裝。
-KILO_ABSENT_HINT_SECONDS = 60
 
 # 評論摘要顯示長度上限
 BODY_SUMMARY_LEN = 120
@@ -199,33 +191,14 @@ def _gh_graphql(query: str, **variables) -> dict:
     return payload
 
 
-# ---- CI / kilo 判讀 ----
+# ---- CI 判讀 ----
 
-
-def _is_kilo_check(check: dict) -> bool:
-    """判斷一個 rollup 條目是否為 kilo 的 CheckRun。
-
-    kilo 的 CheckRun creator 為 null, 只能靠 name 不分大小寫包含 'kilo'。
-    """
-    if check.get("__typename") != "CheckRun":
-        return False
-    name = (check.get("name") or "").lower()
-    return KILO_CHECK_NAME_HINT in name
-
-
-def _split_rollup(rollup: list[dict]) -> tuple[list[dict], list[dict]]:
-    """將 rollup 拆成 (CI 檢查項, kilo check 項)。"""
-    ci: list[dict] = []
-    kilo: list[dict] = []
-    for check in rollup or []:
-        (kilo if _is_kilo_check(check) else ci).append(check)
-    return ci, kilo
 
 def _summarise_checks(rollup: list[dict]) -> tuple[str, bool, bool, bool]:
-    """回傳 (摘要字串, 全部完成, 全部成功, 已知失敗)。僅處理 CI 部分。
+    """回傳 (摘要字串, 全部完成, 全部成功, 已知失敗)。
 
     「已知失敗」在還沒全部完成時就可能為 True, 用於 fail-fast: 任何一個
-    CI 檢查項已結論為失敗就立即退出, 不必等其他檢查跑完。
+    檢查項已結論為失敗就立即退出, 不必等其他檢查跑完。
     """
     if not rollup:
         return "no checks", True, True, False
@@ -251,49 +224,6 @@ def _summarise_checks(rollup: list[dict]) -> tuple[str, bool, bool, bool]:
     if fail:
         summary += f", {fail} fail"
     return summary, done == total, done == total and fail == 0, fail > 0
-
-
-def _kilo_status(kilo_checks: list[dict]) -> tuple[bool, bool, bool, str]:
-    """回傳 (check 是否存在, 是否完成, 是否失敗, 顯示用標籤)。"""
-    if not kilo_checks:
-        return False, False, False, "absent"
-
-    total = len(kilo_checks)
-    completed = 0
-    failures: list[str] = []
-    conclusions: list[str] = []
-    pending_statuses: list[str] = []
-
-    for check in kilo_checks:
-        status = (check.get("status") or "").upper()
-        conclusion = (check.get("conclusion") or "").upper()
-        if status == "COMPLETED":
-            completed += 1
-            conclusion_label = conclusion or "NONE"
-            conclusions.append(conclusion_label)
-            if conclusion in FAILURE_CONCLUSIONS:
-                failures.append(conclusion_label)
-        else:
-            pending_statuses.append(status or "UNKNOWN")
-
-    done = completed == total
-    failed = bool(failures)
-
-    if total == 1:
-        if done:
-            return True, True, failed, f"completed ({conclusions[0]})"
-        return True, False, False, pending_statuses[0].lower()
-
-    if done:
-        labels = list(dict.fromkeys(conclusions))
-        label = f"completed ({', '.join(labels)})"
-    else:
-        label = f"{completed}/{total} done"
-        if failed:
-            labels = list(dict.fromkeys(failures))
-            label += f", failure: {', '.join(labels)}"
-
-    return True, done, failed, label
 
 
 # ---- review threads ----
@@ -500,25 +430,18 @@ def _wait(
     pr: str | None,
     timeout: int,
     interval: int,
-    kilo: bool,
     initial_view: dict | None = None,
-) -> tuple[dict, bool, bool, bool, str]:
-    """輪詢等待 CI 與 kilo 完成。
+) -> dict:
+    """輪詢等待 CI 完成。
 
-    回傳 (pr_view_data, ci_all_success, kilo_exists, kilo_failed, kilo_label)。
-    若 caller 已有包含 statusCheckRollup 的初始 view, 首輪直接使用它。
+    回傳 pr_view_data。若 caller 已有包含 statusCheckRollup 的初始 view,
+    首輪直接使用它。
     """
     deadline = time.time() + timeout
-    start = time.time()
     printed_header = False
     first_iteration = True
-    kilo_absent_warned = False
 
     data: dict | None = initial_view
-    ci_all_success = False
-    kilo_exists = False
-    kilo_failed = False
-    kilo_label = "absent"
 
     while True:
         if data is None:
@@ -536,55 +459,24 @@ def _wait(
             printed_header = True
 
         rollup = data.get("statusCheckRollup") or []
-        ci_checks, kilo_checks = _split_rollup(rollup)
 
-        ci_summary, ci_done, ci_all_success, ci_failed = _summarise_checks(ci_checks)
-        kilo_exists, kilo_done, kilo_failed, kilo_label = _kilo_status(kilo_checks)
+        ci_summary, ci_done, _, ci_failed = _summarise_checks(rollup)
 
-        # 首輪看到空 rollup 不信: GitHub 可能還沒把 CI/kilo 註冊進來。
+        # 首輪看到空 rollup 不信: GitHub 可能還沒把 CI 註冊進來。
         if first_iteration and not rollup:
             ci_done = False
             ci_summary = "registering…"
         first_iteration = False
 
-        # kilo 啟用但久未出現其 CheckRun: 提示可能未安裝 (只警告一次)。
-        if (
-            kilo
-            and not kilo_exists
-            and not kilo_absent_warned
-            and (time.time() - start) >= KILO_ABSENT_HINT_SECONDS
-        ):
-            typer.secho(
-                "⚠ 未偵測到 kilo CheckRun (已等待 "
-                f"{KILO_ABSENT_HINT_SECONDS}s); 確認 repo 是否安裝 kilo, "
-                "否則改用 --no-kilo",
-                fg="yellow",
-                err=True,
-            )
-            kilo_absent_warned = True
-
-        kilo_ready = (not kilo) or kilo_done
-
         ts = datetime.now().strftime("%H:%M:%S")
-        line = f"[{ts}] CI: {ci_summary}"
-        if kilo:
-            line += f" | kilo: {kilo_label}"
-        typer.echo(line)
+        typer.echo(f"[{ts}] CI: {ci_summary}")
 
         # fail-fast: CI 任一項已失敗, 立即退出, 不必等其他檢查。
         if ci_failed:
             typer.secho(f"CI: {ci_summary}", fg="red", err=True)
             raise typer.Exit(1)
-        # fail-fast: kilo 任一已知失敗的 CheckRun 都立即退出。
-        if kilo and kilo_failed:
-            typer.secho(
-                f"Kilo ✗ 已知失敗 ({kilo_label})",
-                fg="red",
-                err=True,
-            )
-            raise typer.Exit(1)
 
-        if ci_done and kilo_ready:
+        if ci_done:
             break
 
         if time.time() >= deadline:
@@ -594,17 +486,13 @@ def _wait(
         time.sleep(min(interval, max(0, deadline - time.time())))
         data = None
 
-    return data, ci_all_success, kilo_exists, kilo_failed, kilo_label
+    return data
 
 
 # 初始 gh pr view 抓的欄位: 解析目標 + fast mergeability 篩選所需。
 _FAST_VIEW_FIELDS = (
     "number,url,state,isDraft,headRefName,baseRefName,"
     "mergeStateStatus,mergeable,updatedAt,statusCheckRollup"
-)
-# _wait 用的欄位: statusCheckRollup 加上分支/URL 顯示。
-_WAIT_VIEW_FIELDS = (
-    "statusCheckRollup,number,url,headRefName,baseRefName"
 )
 # final 篩選用的欄位: 加上 updatedAt 以計算確認碼。
 _FINAL_VIEW_FIELDS = (
@@ -630,14 +518,13 @@ def _run_check(
     *,
     timeout: int,
     interval: int,
-    kilo: bool,
     owner: str,
     name: str,
     number: int,
 ) -> dict[str, Any]:
     """執行完整檢查流程, 回傳 final view (含 updatedAt) 以便計算 hash。
 
-    任一階段失敗 (fast screening / CI/kilo fail-fast / threads / final screening)
+    任一階段失敗 (fast screening / CI fail-fast / threads / final screening)
     都會以 typer.Exit 離開, 不會回到 caller。
     """
     fast_view = _gh_pr_view(pr, _FAST_VIEW_FIELDS)
@@ -650,8 +537,8 @@ def _run_check(
         )
         raise typer.Exit(1)
 
-    # _wait 內部已處理 CI/kilo fail-fast。
-    _wait(pr, timeout, interval, kilo, initial_view=fast_view)
+    # _wait 內部已處理 CI fail-fast。
+    _wait(pr, timeout, interval, initial_view=fast_view)
 
     # threads 檢查
     threads = _fetch_threads(owner, name, number)
@@ -692,18 +579,11 @@ def main(
         int,
         typer.Option("--interval", help="輪詢間隔秒數"),
     ] = 30,
-    kilo: Annotated[
-        bool,
-        typer.Option(
-            "--kilo/--no-kilo",
-            help="是否等待 kilo-code-bot review (GitHub repo 未裝時用 --no-kilo)",
-        ),
-    ] = True,
     list_only: Annotated[
         bool,
         typer.Option(
             "--list",
-            help="只列出 review threads, 不等待 CI/kilo",
+            help="只列出 review threads, 不等待 CI",
         ),
     ] = False,
     resolve: Annotated[
@@ -742,14 +622,14 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """等待 PR 的 CI 與 kilo review 完成, 列出 review threads, 並在確認後執行 merge。
+    """等待 PR 的 CI 完成, 列出 review threads, 並在確認後執行 merge。
 
     預設使用當前分支的 PR, 每 --interval 秒輪詢一次。預設只檢查並輸出
     確認碼; 只有 --apply <hash> 通過同樣重驗證後才會真正呼叫 gh pr merge。
 
     退出碼:
       0  檢查通過 (apply 模式時含 merge 成功)
-      1  CI / kilo / threads / mergeability 任一項失敗, 或 --apply hash 不符
+      1  CI / threads / mergeability 任一項失敗, 或 --apply hash 不符
       2  超時
       3  gh CLI 錯誤 (例如當前分支沒有 PR, 或 gh 未安裝),
          或 --apply 未帶 --user-agreed
@@ -810,7 +690,6 @@ def main(
         pr,
         timeout=timeout,
         interval=interval,
-        kilo=kilo,
         owner=owner,
         name=name,
         number=number,
