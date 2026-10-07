@@ -1,0 +1,150 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["typer"]
+# ///
+"""Chrome + Edge 安裝工具（Fedora dnf 專用）
+
+移除 Vivaldi，安裝 Google Chrome 與 Microsoft Edge。
+Chrome 用現有的 google-chrome.repo；Edge 缺 repo 時自動建立
+/etc/yum.repos.d/microsoft-edge.repo（含 Microsoft GPG key）後再安裝。
+
+用法：
+    install-chrome-edge              # 預覽模式（不實際變更系統）
+    install-chrome-edge --apply      # 實際執行移除/安裝
+    install-chrome-edge --check      # 檢查目前安裝狀態
+"""
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+EDGE_REPO_PATH = Path("/etc/yum.repos.d/microsoft-edge.repo")
+EDGE_REPO_CONTENT = """\
+[microsoft-edge]
+name=Microsoft Edge
+baseurl=https://packages.microsoft.com/yumrepos/edge
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+"""
+EDGE_GPG_KEY = "https://packages.microsoft.com/keys/microsoft.asc"
+VIVALDI_REPO_PATH = Path("/etc/yum.repos.d/vivaldi.repo")
+
+
+def run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    capture: bool = False,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd, check=check, capture_output=capture, text=True, input=input_text
+    )
+
+
+def require_dnf() -> None:
+    if sys.platform != "linux" or not shutil.which("dnf"):
+        print("此腳本僅支援有 dnf 的 Linux 系統", file=sys.stderr)
+        sys.exit(1)
+
+
+def is_installed(pkg: str) -> bool:
+    r = run(["rpm", "-q", pkg], capture=True, check=False)
+    return r.returncode == 0
+
+
+def get_version(binary: str) -> str | None:
+    try:
+        r = run([binary, "--version"], capture=True)
+        return r.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def main(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="實際執行變更（預設為預覽模式）"),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", "-c", help="檢查目前安裝狀態"),
+    ] = False,
+) -> None:
+    """移除 Vivaldi，安裝 Chrome + Edge（預設預覽，加 --apply 執行）"""
+    require_dnf()
+    dry_run = not apply
+
+    has_vivaldi = is_installed("vivaldi-stable")
+    has_chrome = is_installed("google-chrome-stable")
+    has_edge = is_installed("microsoft-edge-stable")
+    has_edge_repo = EDGE_REPO_PATH.exists()
+
+    print("安裝狀態：")
+    print(f"  vivaldi-stable:       {'已安裝（將移除）' if has_vivaldi else '未安裝'}")
+    print(f"  google-chrome-stable: {'已安裝' if has_chrome else '未安裝（將安裝）'}")
+    print(f"  microsoft-edge-stable:{'已安裝' if has_edge else '未安裝（將安裝）'}")
+    print(f"  Edge repo:            {'已存在' if has_edge_repo else '缺（將建立）'}")
+    print()
+
+    if check:
+        print("(dry-run，不做任何變更)")
+        return
+
+    if not has_vivaldi and has_chrome and has_edge:
+        print("✓ 已是目標狀態，無需變更")
+        return
+
+    if dry_run:
+        print("預覽完成！若要實際執行，請加 --apply")
+        print("  install-chrome-edge --apply")
+        return
+
+    # ---- 實際執行（以下皆需 sudo）----
+    if has_vivaldi:
+        print("步驟 1：移除 Vivaldi...")
+        run(["sudo", "dnf", "remove", "-y", "vivaldi-stable"])
+        if VIVALDI_REPO_PATH.exists():
+            run(["sudo", "rm", "-f", str(VIVALDI_REPO_PATH)])
+        print("  ✓ Vivaldi 已移除")
+        print()
+
+    if not is_installed("google-chrome-stable"):
+        print("步驟 2：安裝 Chrome...")
+        run(["sudo", "dnf", "install", "-y", "google-chrome-stable"])
+        print("  ✓ Chrome 已安裝")
+        print()
+
+    if not is_installed("microsoft-edge-stable"):
+        print("步驟 3：安裝 Edge...")
+        if not EDGE_REPO_PATH.exists():
+            print(f"  建立 {EDGE_REPO_PATH}...")
+            run(["sudo", "rpm", "--import", EDGE_GPG_KEY])
+            run(
+                ["sudo", "tee", str(EDGE_REPO_PATH)],
+                input_text=EDGE_REPO_CONTENT,
+                capture=True,
+            )
+        run(["sudo", "dnf", "install", "-y", "microsoft-edge-stable"])
+        print("  ✓ Edge 已安裝")
+        print()
+
+    print("驗證：")
+    for binary in ("google-chrome", "microsoft-edge"):
+        print(f"  {binary}: {get_version(binary) or '未找到！'}")
+    if is_installed("vivaldi-stable"):
+        print("  ⚠ vivaldi-stable 仍在", file=sys.stderr)
+        raise typer.Exit(code=1)
+
+
+if __name__ == "__main__":
+    try:
+        typer.run(main)
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)

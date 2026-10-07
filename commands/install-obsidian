@@ -1,0 +1,278 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["typer"]
+# ///
+"""Obsidian 安裝工具（官方 AppImage）
+
+從 Obsidian 官方 GitHub release 下載 AppImage，安裝到使用者層級：
+  ~/.local/bin/Obsidian.AppImage                        主程式
+  ~/.local/share/icons/hicolor/512x512/apps/obsidian.png 圖示
+  ~/.local/share/applications/md.obsidian.Obsidian.desktop  啟動器（obsidian:// 協定）
+
+不需要 root；Obsidian 內建 updater 會就地更新這個 AppImage。
+
+用法：
+    install-obsidian              # 預覽模式（不實際變更系統）
+    install-obsidian --apply      # 下載安裝（已安裝則更新）
+    install-obsidian --check      # 檢查目前安裝狀態
+    install-obsidian --remove     # 移除 AppImage、圖示與啟動器
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+RELEASES_API = "https://api.github.com/repos/obsidianmd/obsidian-releases/releases"
+ARCH_SUFFIX = {"x86_64": "", "aarch64": "-arm64"}
+APPIMAGE_DIR = Path.home() / ".local" / "bin"
+APPIMAGE_PATH = APPIMAGE_DIR / "Obsidian.AppImage"
+ICON_PATH = Path.home() / ".local" / "share" / "icons" / "hicolor" / "512x512" / "apps" / "obsidian.png"
+DESKTOP_DIR = Path.home() / ".local" / "share" / "applications"
+DESKTOP_PATH = DESKTOP_DIR / "md.obsidian.Obsidian.desktop"
+MIME_TYPES = "x-scheme-handler/obsidian;"
+
+
+def run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    capture: bool = False,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd, check=check, capture_output=capture, text=True, cwd=cwd
+    )
+
+
+def host_arch() -> str:
+    return run(["uname", "-m"], capture=True).stdout.strip()
+
+
+def installed_version() -> str | None:
+    """從啟動器的 X-AppImage-Version 取得已安裝版本。"""
+    if not DESKTOP_PATH.exists():
+        return None
+    for line in DESKTOP_PATH.read_text().splitlines():
+        if line.startswith("X-AppImage-Version="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def appimage_exists() -> bool:
+    return APPIMAGE_PATH.is_file() and os.access(APPIMAGE_PATH, os.X_OK)
+
+
+def fetch_latest() -> tuple[str, str]:
+    """回傳 (version, download_url)；只挑有對應架構 AppImage 的最新 release。"""
+    suffix = ARCH_SUFFIX.get(host_arch())
+    if suffix is None:
+        print(f"此腳本不支援的架構：{host_arch()}", file=sys.stderr)
+        sys.exit(1)
+
+    request = urllib.request.Request(
+        f"{RELEASES_API}?per_page=15", headers={"User-Agent": "install-obsidian"}
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        releases = json.load(response)
+
+    for release in releases:
+        version = release["tag_name"].removeprefix("v")
+        name = f"Obsidian-{version}{suffix}.AppImage"
+        for asset in release["assets"]:
+            if asset["name"] == name:
+                return version, asset["browser_download_url"]
+
+    print(f"最近 {len(releases)} 個 release 都沒有 {host_arch()} 的 AppImage", file=sys.stderr)
+    sys.exit(1)
+
+
+def desktop_entry(version: str) -> str:
+    return f"""\
+[Desktop Entry]
+Name=Obsidian
+Exec={APPIMAGE_PATH} %U
+Terminal=false
+Type=Application
+Icon=obsidian
+StartupWMClass=md.obsidian.Obsidian
+MimeType={MIME_TYPES}
+Categories=Office;
+X-AppImage-Version={version}
+"""
+
+
+def extract_icon() -> None:
+    """從 AppImage 取出內嵌圖示到 ~/.local/share/icons。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        patterns = ["resources/icon.png", "obsidian.png"]
+        for pattern in patterns:
+            run(
+                [str(APPIMAGE_PATH), "--appimage-extract", pattern],
+                capture=True,
+                cwd=Path(tmp),
+            )
+        source = Path(tmp) / "squashfs-root" / "resources" / "icon.png"
+        if not source.exists():
+            source = Path(tmp) / "squashfs-root" / "obsidian.png"
+        ICON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, ICON_PATH)
+
+
+def refresh_desktop_database() -> None:
+    if not DESKTOP_DIR.exists():
+        return
+    if shutil.which("update-desktop-database"):
+        run(["update-desktop-database", str(DESKTOP_DIR)], check=False)
+    if shutil.which("xdg-mime"):
+        run(
+            ["xdg-mime", "default", DESKTOP_PATH.name, MIME_TYPES.rstrip(";")],
+            check=False,
+            capture=True,
+        )
+
+
+def print_state() -> None:
+    version = installed_version()
+    print("安裝狀態：")
+    print(f"  AppImage:      {APPIMAGE_PATH}")
+    print(f"    存在:        {'是' if appimage_exists() else '否'}")
+    print(f"    版本:        {version or '未知（未安裝或無啟動器）'}")
+    print(f"  圖示:          {'已安裝' if ICON_PATH.exists() else '缺'}")
+    print(f"  啟動器:        {'已安裝' if DESKTOP_PATH.exists() else '缺'}")
+
+
+def install() -> None:
+    version, url = fetch_latest()
+    print(f"官方最新 AppImage：{version}")
+    print(f"  {url}")
+    print()
+
+    APPIMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
+    partial = APPIMAGE_PATH.with_suffix(".AppImage.part")
+    print(f"步驟 1：下載到 {APPIMAGE_PATH} ...")
+    run(["curl", "-fL", "--progress-bar", "--output", str(partial), url])
+    partial.chmod(0o755)
+    partial.replace(APPIMAGE_PATH)
+    print(f"  ✓ {APPIMAGE_PATH} 已安裝")
+    print()
+
+    print("步驟 2：安裝圖示與啟動器...")
+    extract_icon()
+    DESKTOP_PATH.write_text(desktop_entry(version))
+    refresh_desktop_database()
+    print(f"  ✓ {ICON_PATH}")
+    print(f"  ✓ {DESKTOP_PATH}")
+    print()
+
+    print("驗證：")
+    probe = run([str(APPIMAGE_PATH), "--appimage-version"], capture=True, check=False)
+    runtime = (probe.stdout + probe.stderr).strip()
+    print(f"  AppImage runtime:  {runtime or '執行失敗！'}")
+    print(f"  檔案:              {'可執行' if appimage_exists() else '缺少！'}")
+    print(f"  啟動器:            {'已安裝' if DESKTOP_PATH.exists() else '缺少！'}")
+    print(f"  圖示:              {'已安裝' if ICON_PATH.exists() else '缺少！'}")
+    if probe.returncode != 0 or not appimage_exists():
+        print("  ⚠ 安裝不完整", file=sys.stderr)
+        raise typer.Exit(code=1)
+    print()
+    print(f"  啟動：obsidian（自動更新由 Obsidian 內建 updater 處理）")
+
+
+def uninstall(apply: bool) -> None:
+    targets = [path for path in (APPIMAGE_PATH, ICON_PATH, DESKTOP_PATH) if path.exists()]
+    if not targets:
+        print("找不到 Obsidian AppImage 安裝，無需移除")
+        return
+
+    print("將移除：")
+    for path in targets:
+        print(f"  {path}")
+    print()
+
+    if not apply:
+        print("預覽完成！若要實際執行，請加 --apply")
+        return
+
+    for path in targets:
+        path.unlink()
+        print(f"  ✓ 已刪除 {path}")
+    refresh_desktop_database()
+    print("  ✓ 完成")
+
+
+def main(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="實際執行變更（預設為預覽模式）"),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", "-c", help="檢查目前安裝狀態"),
+    ] = False,
+    remove: Annotated[
+        bool,
+        typer.Option("--remove", help="移除已安裝的 AppImage"),
+    ] = False,
+) -> None:
+    """Obsidian 安裝工具（官方 AppImage）"""
+    if sys.platform != "linux":
+        print(f"此腳本僅支援 Linux（目前為 {sys.platform}）", file=sys.stderr)
+        sys.exit(1)
+    if not shutil.which("curl"):
+        print("缺少必要工具：curl", file=sys.stderr)
+        sys.exit(1)
+
+    if remove:
+        uninstall(apply)
+        return
+
+    if check:
+        print_state()
+        print()
+        print("(dry-run，不做任何變更)")
+        return
+
+    version, url = fetch_latest()
+    current = installed_version()
+    print("安裝狀態：")
+    print(f"  AppImage:      {APPIMAGE_PATH}")
+    print(f"    已安裝:      {current or '否'}")
+    print(f"  圖示:          {'已安裝' if ICON_PATH.exists() else '缺（將建立）'}")
+    print(f"  啟動器:        {'已安裝' if DESKTOP_PATH.exists() else '缺（將建立）'}")
+    print(f"  官方最新版本:  {version}")
+    print(f"  下載來源:      {url}")
+    print()
+
+    if current == version and appimage_exists() and not apply:
+        print(f"✓ 已是最新版本（{version}）；若要強制重裝請加 --apply")
+        return
+
+    if not apply:
+        if current:
+            print(f"將從 {current} 更新到 {version}")
+        print("預覽完成！若要實際執行，請加 --apply")
+        print("  install-obsidian --apply")
+        return
+
+    install()
+
+
+if __name__ == "__main__":
+    try:
+        typer.run(main)
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
+    except urllib.error.URLError as e:
+        print(f"無法取得 Obsidian 版本資訊：{e}", file=sys.stderr)
+        sys.exit(1)

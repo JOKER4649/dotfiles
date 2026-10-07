@@ -1,0 +1,353 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["typer", "httpx"]
+# ///
+"""Orca ADE 安裝工具（官方 .rpm，Fedora/RHEL dnf 專用）
+
+從 GitHub Releases 下載對應架構的 `orca-ide-*.rpm`，再用 dnf 安裝。
+選 rpm 是為了讓 dnf 管套件，避開 AppImage 對 FUSE 的依賴；不是因為 AppImage 有容器隔離。
+
+套件名與 CLI 都是 `orca-ide`，避免蓋掉 GNOME 螢幕閱讀器 `/usr/bin/orca`。
+
+用法：
+    install-orca                    安裝或更新到最新穩定版
+    install-orca --check            只比對已裝版本與 GitHub 最新版
+    install-orca --force            強制重新下載安裝
+    install-orca --version 1.4.218  安裝/降級到指定版本
+    install-orca --remove           移除 orca-ide（不動 GNOME orca）
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Annotated
+
+import httpx
+import typer
+
+REPO = "stablyai/orca"
+GITHUB_API = f"https://api.github.com/repos/{REPO}"
+PACKAGE_NAME = "orca-ide"
+DESKTOP_BIN = "/usr/bin/orca-ide"
+GNOME_ORCA_BIN = "/usr/bin/orca"
+
+ARCH_RPM_SUFFIX: dict[str, str] = {
+    "x86_64": ".x86_64.rpm",
+    "aarch64": ".aarch64.rpm",
+}
+
+
+def run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True)
+
+
+def github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "dotfiles-install-orca",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def get_arch() -> str:
+    arch = run(["uname", "-m"], capture=True).stdout.strip()
+    if arch not in ARCH_RPM_SUFFIX:
+        print(
+            f"此腳本僅支援 {', '.join(ARCH_RPM_SUFFIX)} 架構（目前為 {arch}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return arch
+
+
+def require_dnf() -> None:
+    if sys.platform != "linux" or not shutil.which("dnf"):
+        print("此腳本僅支援有 dnf 的 Linux 系統（Fedora / RHEL / Rocky）", file=sys.stderr)
+        sys.exit(1)
+
+
+def normalize_version(v: str) -> str:
+    return v.lstrip("vV")
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def get_installed_version() -> str | None:
+    r = run(
+        ["rpm", "-q", "--queryformat", "%{VERSION}-%{RELEASE}", PACKAGE_NAME],
+        capture=True,
+        check=False,
+    )
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def get_rpm_query(rpm_path: Path, fmt: str) -> str:
+    r = run(
+        ["rpm", "-qp", "--queryformat", fmt, str(rpm_path)],
+        capture=True,
+    )
+    return r.stdout.strip()
+
+
+def orca_is_running() -> bool:
+    r = run(["pgrep", "-x", "orca-ide"], capture=True, check=False)
+    return r.returncode == 0
+
+
+def fetch_release(tag: str | None) -> dict:
+    url = (
+        f"{GITHUB_API}/releases/tags/v{normalize_version(tag)}"
+        if tag
+        else f"{GITHUB_API}/releases/latest"
+    )
+    resp = httpx.get(url, headers=github_headers(), timeout=30, follow_redirects=True)
+    if resp.status_code == 404:
+        raise RuntimeError(
+            f"找不到 release {tag or 'latest'}。"
+            f" 請確認版本存在：https://github.com/{REPO}/releases"
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def pick_rpm_asset(release: dict, arch: str) -> tuple[str, str, str]:
+    """回傳 (version, filename, download_url)。"""
+    tag = normalize_version(str(release.get("tag_name") or ""))
+    suffix = ARCH_RPM_SUFFIX[arch]
+    assets = release.get("assets") or []
+    matches = [
+        a
+        for a in assets
+        if str(a.get("name", "")).startswith("orca-ide-")
+        and str(a.get("name", "")).endswith(suffix)
+    ]
+    if not matches:
+        names = ", ".join(str(a.get("name")) for a in assets) or "(無 assets)"
+        raise RuntimeError(
+            f"release v{tag} 沒有 {arch} 的 rpm。可用檔案：{names}"
+        )
+    asset = matches[0]
+    name = str(asset["name"])
+    url = str(asset["browser_download_url"])
+    return tag, name, url
+
+
+def download_rpm(url: str, dest: Path) -> None:
+    is_tty = sys.stdout.isatty()
+    with httpx.stream(
+        "GET",
+        url,
+        headers=github_headers(),
+        follow_redirects=True,
+        timeout=300,
+    ) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
+        last_milestone = -1
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_bytes(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if not total:
+                    continue
+                pct = downloaded * 100 // total
+                mb_dl = downloaded / 1024 / 1024
+                mb_tot = total / 1024 / 1024
+                if is_tty:
+                    print(
+                        f"\r  下載進度: {pct}% ({mb_dl:.1f}/{mb_tot:.1f} MB)",
+                        end="",
+                        flush=True,
+                    )
+                else:
+                    milestone = pct // 10
+                    if milestone != last_milestone:
+                        last_milestone = milestone
+                        print(
+                            f"  下載進度: {pct}% ({mb_dl:.1f}/{mb_tot:.1f} MB)",
+                            flush=True,
+                        )
+        if is_tty:
+            print()
+
+
+def install_rpm(rpm_path: Path, *, downgrade: bool = False) -> None:
+    print("安裝中（需 sudo）...")
+    subcommand = "downgrade" if downgrade else "install"
+    run(["sudo", "dnf", subcommand, "-y", "--allowerasing", str(rpm_path)])
+
+
+def remove_package(*, dry_run: bool) -> None:
+    installed = get_installed_version()
+    if installed is None:
+        print("orca-ide 未安裝，無需移除")
+        return
+
+    print(f"將移除: {PACKAGE_NAME} {installed}")
+    print(f"  （不會動 GNOME 螢幕閱讀器 {GNOME_ORCA_BIN}）")
+    if dry_run:
+        print("\n(--check 模式：不執行移除)")
+        return
+    if orca_is_running():
+        print("Orca 正在執行，請先關掉再移除。", file=sys.stderr)
+        raise typer.Exit(code=1)
+    run(["sudo", "dnf", "remove", "-y", PACKAGE_NAME])
+    if get_installed_version() is None:
+        print("\n✓ orca-ide 已移除")
+    else:
+        print("\n⚠ dnf 跑完但 rpm -q 仍看得到 orca-ide", file=sys.stderr)
+        raise typer.Exit(code=1)
+
+
+def main(
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="強制重新下載並安裝，忽略版本比對"),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", "-c", help="只檢查是否有更新，不下載"),
+    ] = False,
+    version: Annotated[
+        str | None,
+        typer.Option(
+            "--version",
+            "-V",
+            help="指定版本（例: 1.4.218 或 v1.4.218）。留空則裝 GitHub latest。",
+        ),
+    ] = None,
+    remove: Annotated[
+        bool,
+        typer.Option("--remove", help="移除 orca-ide（不動 GNOME orca）"),
+    ] = False,
+) -> None:
+    """安裝或更新 Orca ADE 官方 .rpm。"""
+    require_dnf()
+    arch = get_arch()
+    installed = get_installed_version()
+
+    print(f"平台: Linux {arch}")
+    print(f"目前版本: {installed or '未安裝'}")
+
+    if remove:
+        print()
+        remove_package(dry_run=check)
+        raise typer.Exit()
+
+    print("查 GitHub Releases...")
+    release = fetch_release(version)
+    latest, filename, url = pick_rpm_asset(release, arch)
+    print(f"目標版本: {latest}")
+    print(f"  檔名: {filename}")
+
+    installed_base = installed.split("-")[0] if installed else None
+    same_version = installed_base == latest
+
+    if same_version and not force:
+        print(f"\n✓ 已安裝 {installed}，跳過（--force 可強制重裝）")
+        if Path(DESKTOP_BIN).exists():
+            print(f"啟動: {DESKTOP_BIN}")
+        raise typer.Exit()
+
+    if installed is None:
+        print("  → 尚未安裝，將執行首次安裝")
+    elif same_version:
+        print("  → --force 指定，重新安裝相同版本")
+    else:
+        print(f"  → 將從 {installed} 切換到 {latest}")
+
+    if check:
+        print("\n(--check 模式：不執行實際下載/安裝)")
+        raise typer.Exit()
+
+    if installed is not None and orca_is_running() and not force:
+        print(
+            "\nOrca 正在執行。官方要求升級前記得先關掉，然後再跑一次。",
+            file=sys.stderr,
+        )
+        print("若確定要硬裝，加 --force。", file=sys.stderr)
+        raise typer.Exit(code=1)
+
+    print(f"\n下載 rpm 中...\n  {url}")
+    with tempfile.TemporaryDirectory(prefix="install-orca-") as tmp:
+        rpm_path = Path(tmp) / filename
+        try:
+            download_rpm(url, rpm_path)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                print(f"\n錯誤: 找不到 rpm：{url}", file=sys.stderr)
+                raise typer.Exit(code=1)
+            raise
+
+        rpm_name = get_rpm_query(rpm_path, "%{NAME}")
+        rpm_version = get_rpm_query(rpm_path, "%{VERSION}-%{RELEASE}")
+        print(f"  → rpm 套件: {rpm_name} {rpm_version}")
+
+        if rpm_name != PACKAGE_NAME:
+            print(
+                f"\n拒絕安裝：套件名是 {rpm_name!r}，預期 {PACKAGE_NAME!r}。"
+                " 避免誤傷 GNOME 螢幕閱讀器 orca。",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+
+        is_downgrade = (
+            installed is not None
+            and version_tuple(rpm_version) < version_tuple(installed)
+        )
+        if is_downgrade:
+            print(f"  → 偵測到降級: {installed} → {rpm_version}，使用 dnf downgrade")
+
+        print()
+        install_rpm(rpm_path, downgrade=is_downgrade)
+
+    new_version = get_installed_version()
+    if new_version is None:
+        print("\n⚠ dnf 指令完成但 rpm -q 找不到 orca-ide", file=sys.stderr)
+        raise typer.Exit(code=1)
+
+    if new_version != rpm_version:
+        print(
+            f"\n⚠ 注意: 下載版本 {rpm_version}，但系統顯示 {new_version}",
+            file=sys.stderr,
+        )
+
+    print(f"\n✓ Orca {new_version} 安裝成功")
+    print(f"啟動: {DESKTOP_BIN}   （不要用 `orca`，那是 GNOME 螢幕閱讀器）")
+    if installed is None:
+        print("\n輸入法若進不了編輯器 / 內建 terminal，可試：")
+        print(
+            "  ELECTRON_OZONE_PLATFORM_HINT=wayland"
+            " orca-ide --enable-wayland-ime --wayland-text-input-version=3"
+        )
+
+
+if __name__ == "__main__":
+    try:
+        typer.run(main)
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
+    except httpx.HTTPError as e:
+        print(f"網路錯誤: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"錯誤: {e}", file=sys.stderr)
+        sys.exit(1)
