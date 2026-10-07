@@ -146,7 +146,7 @@ if [[ -z "$OPENCODE" ]]; then
   eval "$(starship init zsh)"
 fi
 
-export EDITOR="code --wait"
+#export EDITOR="code --wait"
 
 # 自訂 CLI 命令
 export PATH="$HOME/dotfiles/commands:$PATH"
