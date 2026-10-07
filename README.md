@@ -1,4 +1,4 @@
-# myconfig
+# dotfiles
 
 備份與同步個人常用工具設定檔的倉庫。
 
@@ -41,7 +41,7 @@ Cursor Agent CLI 插件，從 [cursor.com](https://cursor.com) 官方下載安�
 首次設定需手動連結插件：
 
 ```bash
-mise plugins link cursor-agent ~/myconfig/mise/plugins/cursor-agent
+mise plugins link cursor-agent ~/dotfiles/mise/plugins/cursor-agent
 ```
 
 之後 `mise install` 會自動安裝 `mise/config.toml` 中宣告的 `cursor-agent`。

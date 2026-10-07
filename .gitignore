@@ -6,6 +6,10 @@
 
 # herdr 安裝的整合檔（自動生成，不應手動追蹤）
 opencode/plugins/herdr-*.js
+opencode/herdr-tui-session.js
+opencode/plugins/orca-opencode-status*.js
+opencode/plugins/orca-opencode-status-tui/
+opencode/tui.jsonc
 
 # codeg 安裝的 skill 軟連結（指向 ~/.codeg/skills/，跨機器無效，應由 codeg 管理）
 opencode/skills/brainstorming

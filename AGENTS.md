@@ -5,7 +5,7 @@
 ## 專案結構
 
 ```
-myconfig/
+dotfiles/
 ├── commands/    # 自訂 CLI 命令（Python + typer，透過 mise PATH 注入）
 ├── link.py      # Symlink 管理腳本
 ├── mise/        # mise 開發工具版本管理器設定
@@ -29,7 +29,7 @@ myconfig/
 ## commands/ — 自訂 CLI 命令
 
 - **技術棧**：Python + [typer](https://typer.tiangolo.com/)（透過 PEP 723 inline script metadata + `uv run` 自動管理依賴）
-- **PATH 注入**：`zsh/.zshrc` 中 `export PATH="$HOME/myconfig/commands:$PATH"`
+- **PATH 注入**：`zsh/.zshrc` 中 `export PATH="$HOME/dotfiles/commands:$PATH"`
 - **新增命令**：在 `commands/` 中建立可執行檔（`chmod +x`），shebang 使用 `#!/usr/bin/env python3`，即可直接作為系統命令使用
 - **慣例**：
   - 每個命令一個檔案，檔名即命令名（無副檔名）

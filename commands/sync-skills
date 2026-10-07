@@ -5,7 +5,7 @@
 # ]
 # ///
 
-"""備份 npm:skills 的 lock 檔到 myconfig 倉庫並自動 commit + push。
+"""備份 npm:skills 的 lock 檔到 dotfiles 倉庫並自動 commit + push。
 
 npm:skills 的安裝清單記錄在 ~/.agents/.skill-lock.json（由 skills CLI
 管理，路徑見其原始碼 getSkillLockPath()）。本腳本將該檔案複製回倉庫的

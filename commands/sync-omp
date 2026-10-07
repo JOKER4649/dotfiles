@@ -4,7 +4,7 @@
 #   "typer>=0.12",
 # ]
 # ///
-"""備份 omp 設定檔到 myconfig 倉庫並自動 commit + push。
+"""備份 omp 設定檔到 dotfiles 倉庫並自動 commit + push。
 
 omp 的設定檔位於 ~/.omp/agent/，本腳本將其中「值得備份」的檔案
 複製回倉庫的 omp/ 目錄，再交由 git 自動 commit + push。

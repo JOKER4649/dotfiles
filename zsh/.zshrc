@@ -149,7 +149,7 @@ fi
 export EDITOR="code --wait"
 
 # 自訂 CLI 命令
-export PATH="$HOME/myconfig/commands:$PATH"
+export PATH="$HOME/dotfiles/commands:$PATH"
 
 # Added by LM Studio CLI tool (lms)
 export PATH="$PATH:/home/joker/.lmstudio/bin"
@@ -167,7 +167,7 @@ export PATH=/home/joker/.opencode/bin:$PATH
 # 用 wrapper function 而非 export，OPENCODE_CONFIG_DIR 只注入 opencode child，
 # 不進 shell 環境，因此不會被 multica daemon（os.Environ() 繼承）等子行程帶走。
 opencode() {
-  OPENCODE_CONFIG_DIR="$HOME/myconfig/opencode-local" command opencode "$@"
+  OPENCODE_CONFIG_DIR="$HOME/dotfiles/opencode-local" command opencode "$@"
 }
 
 # bun completions

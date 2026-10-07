@@ -104,42 +104,6 @@ vim opencode.jsonc
 # 設定必要的環境變數（如 API token）
 ```
 
-### Memory MCP（Hindsight 本地 stack）
-
-`services/hindsight/` 跑起來的話，opencode 端的 MCP key 叫 `memory`，
-tools 會以 `memory_retain` / `memory_recall` / `memory_reflect` / `memory_list_banks`
-等前綴掛進來（multi-bank 模式，走 `http://127.0.0.1:8888/mcp`，loopback only）。
-
-啟動 stack：
-
-```bash
-cd ~/myconfig/services/hindsight && docker compose up -d
-curl -fsS http://127.0.0.1:8888/health   # 確認 API ready
-```
-
-要綁預設 bank（避免每次呼叫都傳 `bank_id`），在 `opencode.jsonc` 的
-`mcp.memory` 內加 `headers: { "X-Bank-Id": "<your-bank>" }` 即可。
-
-`reflect` 會打 LLM，可能踩到預設 30s timeout，失敗手動 retry 即可。
-
-### Hindsight Control Plane（Web UI）
-
-除了 MCP，`hindsight` container 還有一個完整的 Next.js 管理介面跑在
-`http://127.0.0.1:9999`（loopback only）。功能比 MCP 視覺化得更完整：
-
-- Memory browser：Constellation / Graph / Table / Timeline 四種 view
-- Documents：文字與檔案上傳、extraction mode 設定
-- Entities：entity graph + list
-- Mental models：列表、history diff、refresh trigger (cron / auto / manual)
-- Directives、Webhooks、Audit logs、LLM requests、Failed consolidations
-- Search debug 與 Think panel（手動 recall / reflect）
-
-第一次訪問會跳 login page，access key 在 `services/hindsight/.env` 的
-`HINDSIGHT_CP_ACCESS_KEY`。沒設這變數 = UI 完全 open；設了之後 = 走 cookie
-session。
-
-Port `9999` 已透過 docker-compose 綁 `127.0.0.1`，不對外暴露。
-
 ### 添加全局行為規則
 
 ```bash
