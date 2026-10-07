@@ -25,14 +25,19 @@ wrangler = { version = "latest", allow_builds = ["esbuild", "sharp", "workerd"] 
 cloud-sql-proxy = "2.22.1"
 "npm:@openchamber/web" = "latest"
 yazi = "latest"
-"npm:@oh-my-pi/pi-coding-agent" = "latest"
+"github:can1357/oh-my-pi" = "latest"
 mysql-client = "latest"
 "npm:skills" = "latest"
 herdr = "latest"
+pnpm = "latest"
 
 [settings]
 npm.package_manager = "bun"
 python.uv_venv_auto = true
+minimum_release_age = "2h"
+
+[settings.gitlab]
+glab_cli_tokens = false
 
 # [task_config]
 # dir = "tasks"

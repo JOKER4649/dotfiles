@@ -74,6 +74,7 @@ pull-default = "{% if branch == default_branch %}git pull --ff-only{% endif %}"
 go = "wt switch --create {{ args }}"
 cont = "wt switch --execute 'opencode -c' {{ args }}"
 task = "wt switch --create --execute 'opencode run' {{ args }}"
+clean = "git worktree prune --expire now -v"
 
 [commit]
 # `wt step commit`、`wt step squash`、`wt merge` 提交前自動 stage 全部變更。
