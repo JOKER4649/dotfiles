@@ -52,20 +52,6 @@
       "type": "remote",
       "url": "https://mcp.grep.app",
     },
-    // Hindsight 是本地 long-term memory stack (services/hindsight/)。
-    // opencode 端 key 叫 `memory`,tools 就會是 memory_retain / memory_recall /
-    // memory_reflect 等,語意更貼模型使用情境(避免 hindsight_* 雙重 prefix)。
-    //  - URL 綁 127.0.0.1:8888 而非 0.0.0.0:跟 docker-compose 的 port mapping 一致。
-    //  - X-Bank-Id: joker 已綁預設 bank,retain/recall/reflect 不用帶 bank_id。
-    //    之後要切別的 bank:把 headers 拿掉(讓模型 list_banks 選),或換成別的值。
-    //  - reflect 會打 LLM,30s 預設 timeout 可能踩到,失敗再手動 retry。
-    "memory": {
-      "type": "remote",
-      "url": "http://127.0.0.1:8888/mcp",
-      "headers": {
-        "X-Bank-Id": "joker",
-      },
-    },
   },
   "experimental": {
     "quotaToast": {

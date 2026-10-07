@@ -90,7 +90,6 @@ variant: high
 - 瀏覽器自動化 / 網頁互動 / 表單 / 截圖 / 抓資料 → `agent-browser`
 - 設計 / 重塑 opencode subagent → `design-subagent`
 - 編輯 opencode 自身配置(`opencode.json` / `.opencode` / `agents/` / `skills/` / MCP)→ `customize-opencode`
-- 研究 / 搜尋 / 查詢 / 比較 / 找答案 → `research-sop`
 - 決定自己做 vs 委派 subagent → `subagent-as-tool`
 - 建立 review-ready 的 PR → `create-strong-pr`
 - 為專案開發 workflow → `develop-workflow`
