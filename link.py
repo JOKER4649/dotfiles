@@ -37,9 +37,6 @@ LINKS: list[LinkEntry] = [
     LinkEntry("zellij/config.kdl", "~/.config/zellij/config.kdl"),
     LinkEntry("kitty", "~/.config/kitty"),
     LinkEntry(
-        "systemd/opencode-web.service", "~/.config/systemd/user/opencode-web.service"
-    ),
-    LinkEntry(
         "systemd/portless-proxy.service",
         "~/.config/systemd/user/portless-proxy.service",
     ),

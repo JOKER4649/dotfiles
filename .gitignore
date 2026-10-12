@@ -9,7 +9,13 @@ opencode/plugins/herdr-*.js
 opencode/herdr-tui-session.js
 opencode/plugins/orca-opencode-status*.js
 opencode/plugins/orca-opencode-status-tui/
+# worktrunk 自動安裝（wt config plugins opencode install），同上不追蹤
+opencode/plugins/worktrunk.ts
+# v2 自動生成的執行期檔案（theme 已遷移到 cli.json，password 隨機生成）
+opencode/tui.json
 opencode/tui.jsonc
+opencode/cli.json
+opencode/service.json
 
 # codeg 安裝的 skill 軟連結（指向 ~/.codeg/skills/，跨機器無效，應由 codeg 管理）
 opencode/skills/brainstorming

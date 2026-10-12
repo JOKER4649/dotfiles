@@ -8,7 +8,6 @@
 |------|------|
 | `commands/`  | 自訂 CLI 命令（Python + typer，透過 mise PATH 注入） |
 | `opencode/` | [OpenCode](https://opencode.ai) AI 編碼助手設定（共用 base，`~/.config/opencode` symlink） |
-| `opencode-local/` | OpenCode 個人 overlay（`agents/` 等），僅互動式使用時透過 `OPENCODE_CONFIG_DIR` 疊加；非 symlink，避免污染 multica 等直接叫用 opencode 的工具 |
 | `zsh/` | Zsh shell 設定（基於 [Oh My Zsh](https://ohmyz.sh)） |
 | `ssh/` | OpenSSH 用戶端設定（`~/.ssh/config` symlink，統一使用 `xterm-256color`） |
 | `mise/` | [mise](https://mise.jdx.dev) 開發工具版本管理器設定 |
@@ -19,7 +18,7 @@
 | `biome/` | [Biome](https://biomejs.dev) 全局 formatter 配置（TS/JS/JSON/CSS） |
 | `prettier/` | [Prettier](https://prettier.io) 全局 formatter 配置 + plugins（Vue/Astro/Svelte/MD/YAML） |
 | `backup/` | 每日自動備份腳本（cron 排程，自動 commit + push） |
-| `systemd/` | systemd user service 設定（opencode-web、portless-proxy 等） |
+| `systemd/` | systemd user service 設定（portless-proxy 等） |
 | `environment.d/` | systemd user 環境變數（`~/.config/environment.d/`） |
 | `fcitx5/` | [Fcitx5](https://fcitx-im.org) 輸入法 XDG autostart 設定 |
 | `worktrunk/` | [Worktrunk](https://worktrunk.dev) git worktree 管理工具設定 |

@@ -163,12 +163,5 @@ if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)
 # opencode
 export PATH=/home/joker/.opencode/bin:$PATH
 
-# opencode: 個人設定 overlay（僅疊加於互動式呼叫）
-# 用 wrapper function 而非 export，OPENCODE_CONFIG_DIR 只注入 opencode child，
-# 不進 shell 環境，因此不會被 multica daemon（os.Environ() 繼承）等子行程帶走。
-opencode() {
-  OPENCODE_CONFIG_DIR="$HOME/dotfiles/opencode-local" command opencode "$@"
-}
-
 # bun completions
 [ -s "/home/joker/.bun/_bun" ] && source "/home/joker/.bun/_bun"
